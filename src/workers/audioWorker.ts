@@ -17,7 +17,11 @@ import {
   cleanupFiles,
 } from "../lib/ffmpegClient";
 import { detectSilences } from "../lib/silenceDetection";
-import { planCuts, planCutsFromChapters } from "../lib/cutPlanner";
+import {
+  anyChapterWillSubdivide,
+  planCuts,
+  planCutsFromChapters,
+} from "../lib/cutPlanner";
 import { buildSpeechText } from "../lib/tts/speechText";
 import { partFilename } from "../lib/filename";
 import { splitExt } from "../lib/supportedFormats";
@@ -127,16 +131,24 @@ async function runPipeline(
   let sourceBuffer: ArrayBuffer | null = await file.arrayBuffer();
   await ff0.writeFile(INPUT_FILE, new Uint8Array(sourceBuffer.slice(0)));
 
-  // Silence detection is only used for time-based cut snapping. In
-  // chapter mode the cut points are already known, so we skip it.
-  let cuts: CutPoint[];
-  if (splitMode === "chapters" && chapters.length > 0) {
-    progress("analyzing", 100, 0, undefined, "Using chapter boundaries");
-    progress("planning", 0, 0, undefined, "Planning from chapters...");
-    cuts = planCutsFromChapters(chapters, totalDuration);
-  } else {
+  // Time mode always needs silences for cut snapping. Chapter mode only
+  // needs them when at least one chapter exceeds the target ceiling and
+  // will be subdivided — short-chapter podcasts skip the ffmpeg pass
+  // entirely, saving several seconds per job.
+  const useChapters = splitMode === "chapters" && chapters.length > 0;
+  const needsSilences =
+    !useChapters ||
+    anyChapterWillSubdivide(
+      chapters,
+      totalDuration,
+      settings.targetPartDurationSec,
+      settings.playbackSpeed,
+    );
+
+  let silences: { start: number; end: number }[] = [];
+  if (needsSilences) {
     progress("analyzing", 30, 0, undefined, "Detecting silences...");
-    const silences = await detectSilences(
+    silences = await detectSilences(
       ff0,
       INPUT_FILE,
       settings.silenceThresholdDb,
@@ -149,6 +161,21 @@ async function runPipeline(
       undefined,
       `Found ${silences.length} silence intervals`,
     );
+  } else {
+    progress("analyzing", 100, 0, undefined, "Using chapter boundaries");
+  }
+
+  let cuts: CutPoint[];
+  if (useChapters) {
+    progress("planning", 0, 0, undefined, "Planning from chapters...");
+    cuts = planCutsFromChapters(
+      chapters,
+      totalDuration,
+      settings.targetPartDurationSec,
+      settings.playbackSpeed,
+      silences,
+    );
+  } else {
     progress("planning", 0, 0, undefined, "Planning segments...");
     cuts = planCuts(
       totalDuration,
@@ -173,12 +200,13 @@ async function runPipeline(
   const ttsPromises: Promise<Blob>[] = settings.spokenPrefix
     ? cuts.map((cut, i) =>
         requestTTS(
-          cut.chapterTitle !== undefined
+          cut.chapter
             ? buildSpeechText({
                 kind: "chapter",
-                partIndex: i,
+                chapterNumber: cut.chapter.number,
                 podcastTitle: settings.podcastTitle,
-                chapterTitle: cut.chapterTitle,
+                chapterTitle: cut.chapter.title,
+                subPart: cut.chapter.part,
               })
             : buildSpeechText({
                 kind: "time",
@@ -224,11 +252,12 @@ async function runPipeline(
     flushChain = flushChain.then(async () => {
       while (completedParts.has(nextZipIndex)) {
         const data = completedParts.get(nextZipIndex)!;
+        const cut = cuts[nextZipIndex]!;
         const fname = partFilename(
           nextZipIndex,
           totalParts,
           settings.podcastTitle,
-          cuts[nextZipIndex]!.chapterTitle,
+          cut.chapter,
         );
         await addPartToZip(fname, data);
         completedParts.delete(nextZipIndex);

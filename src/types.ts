@@ -59,14 +59,22 @@ export interface SilenceInterval {
   end: number;
 }
 
+export interface ChapterCutInfo {
+  title: string;
+  number: number;
+  totalChapters: number;
+  // Present only when the chapter was long enough to be subdivided.
+  part?: { index: number; count: number };
+}
+
 export interface CutPoint {
   startSec: number;
   endSec: number;
   partIndex: number;
-  // Populated only in chapter-mode plans; undefined for time-based cuts.
-  // Carried on the cut so the worker doesn't have to re-match chapters
-  // to cuts after planning.
-  chapterTitle?: string;
+  // Absent for time-mode cuts. When present, all chapter-mode consumers
+  // (speech text, filename, UI) read chapter identity from here — no
+  // per-field presence checks required.
+  chapter?: ChapterCutInfo;
 }
 
 // --- Worker messages ---

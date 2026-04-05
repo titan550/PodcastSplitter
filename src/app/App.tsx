@@ -54,7 +54,7 @@ export function App() {
       });
     })();
     return ttsInitPromiseRef.current;
-  }, []);
+  }, [dispatch]);
 
   // Preload TTS model on mount so the voice model starts downloading
   // while the user is still picking a file. Silently ignores errors —
@@ -128,7 +128,7 @@ export function App() {
     } finally {
       ttsProcessingRef.current = false;
     }
-  }, [releaseWakeLock]);
+  }, [dispatch, releaseWakeLock]);
 
   const handleTTSRequest = useCallback(
     (id: number, text: string) => {
@@ -184,7 +184,7 @@ export function App() {
     };
     workerRef.current = worker;
     return worker;
-  }, [handleTTSRequest, releaseWakeLock]);
+  }, [dispatch, handleTTSRequest, releaseWakeLock]);
 
   // Terminates the live worker, drops any TTS queue entries that target
   // it, and spins up a fresh worker.
@@ -255,7 +255,7 @@ export function App() {
         });
       }
     },
-    [state.settings.parallelEncoding],
+    [dispatch, state.settings.parallelEncoding],
   );
 
   const handleStart = useCallback(() => {
@@ -297,6 +297,7 @@ export function App() {
       },
     });
   }, [
+    dispatch,
     state.file,
     state.settings,
     state.splitMode,
@@ -310,7 +311,7 @@ export function App() {
     terminateAndRecreateWorker();
     releaseWakeLock();
     dispatch({ type: "RESET" });
-  }, [terminateAndRecreateWorker, releaseWakeLock]);
+  }, [dispatch, terminateAndRecreateWorker, releaseWakeLock]);
 
   const handleDownload = useCallback(() => {
     if (!state.zipBlob) return;

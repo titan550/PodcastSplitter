@@ -52,6 +52,40 @@ export function planCuts(
   return cuts;
 }
 
+// Chapters shorter than (target * CHAPTER_TOLERANCE) stay as a single part
+// instead of subdividing into a lopsided 2-way split. At the default 5-min
+// target this tolerance (30 s) lines up with MIN_TRAILING_SEC so the inner
+// planCuts would have merged the tail back in anyway.
+const CHAPTER_TOLERANCE = 1.1;
+
+/**
+ * Cheap O(chapters) predicate that mirrors the subdivision test inside
+ * `planCutsFromChapters` without running the planner. Used by the worker
+ * to decide whether silence detection is worth running in chapter mode:
+ * if no chapter will subdivide, silences are never used.
+ */
+export function anyChapterWillSubdivide(
+  chapters: Chapter[],
+  totalDurationSec: number,
+  targetPartSec: number,
+  playbackSpeed: number,
+): boolean {
+  if (chapters.length === 0) return false;
+  const sorted = [...chapters].sort((a, b) => a.start - b.start);
+  if (sorted[0]!.start > 1) {
+    sorted.unshift({ title: "Intro", start: 0 });
+  }
+  const ceiling = targetPartSec * CHAPTER_TOLERANCE;
+  for (let i = 0; i < sorted.length; i++) {
+    const startSec = sorted[i]!.start;
+    const endSec =
+      i + 1 < sorted.length ? sorted[i + 1]!.start : totalDurationSec;
+    if (endSec <= startSec) continue;
+    if ((endSec - startSec) / playbackSpeed > ceiling) return true;
+  }
+  return false;
+}
+
 /**
  * Plans cuts directly from parsed MP3/M4B chapters. Guarantees ordered,
  * gap-free coverage from 0 to totalDurationSec:
@@ -64,32 +98,98 @@ export function planCuts(
  *     are intentionally ignored — they can leave gaps or overlap.
  *  4. Zero-length segments are dropped, so a chapter at the exact file end
  *     doesn't produce an empty part.
+ *  5. Chapters whose output duration (accounting for playbackSpeed) exceeds
+ *     targetPartSec * CHAPTER_TOLERANCE are subdivided: the shared silence
+ *     list is filtered + rebased into the chapter's window and fed to
+ *     planCuts, whose returned sub-cuts are offset back to absolute time.
+ *     Sub-parts carry chapterPartIndex/chapterPartCount so downstream code
+ *     can format them distinctly.
  *
- * Returned cuts share the same CutPoint shape as time-based cuts so the
- * downstream encoding pipeline treats both modes uniformly.
+ * All chapter-mode cuts carry chapterNumber + totalChapters (post-Intro-
+ * prepend) so speech text and filenames refer to the true chapter ordinal
+ * instead of the global partIndex.
  */
 export function planCutsFromChapters(
   chapters: Chapter[],
   totalDurationSec: number,
+  targetPartSec: number,
+  playbackSpeed: number,
+  silences: SilenceInterval[],
 ): CutPoint[] {
   if (chapters.length === 0) return [];
   const sorted = [...chapters].sort((a, b) => a.start - b.start);
   if (sorted[0]!.start > 1) {
     sorted.unshift({ title: "Intro", start: 0 });
   }
-  const cuts: CutPoint[] = [];
+
+  // Build [start, end] windows first so totalChapters can exclude any
+  // zero-length segments dropped below (a trailing chapter at exact file
+  // end, etc.).
+  const windows: { title: string; start: number; end: number }[] = [];
   for (let i = 0; i < sorted.length; i++) {
     const startSec = sorted[i]!.start;
     const endSec =
       i + 1 < sorted.length ? sorted[i + 1]!.start : totalDurationSec;
     if (endSec > startSec) {
+      windows.push({ title: sorted[i]!.title, start: startSec, end: endSec });
+    }
+  }
+
+  const totalChapters = windows.length;
+  const cuts: CutPoint[] = [];
+  const ceiling = targetPartSec * CHAPTER_TOLERANCE;
+
+  for (let ci = 0; ci < windows.length; ci++) {
+    const win = windows[ci]!;
+    const chapterBase = {
+      title: win.title,
+      number: ci + 1,
+      totalChapters,
+    };
+    const windowLen = win.end - win.start;
+    const outputDuration = windowLen / playbackSpeed;
+
+    if (outputDuration <= ceiling) {
       cuts.push({
-        startSec,
-        endSec,
-        partIndex: cuts.length,
-        chapterTitle: sorted[i]!.title,
+        startSec: win.start,
+        endSec: win.end,
+        partIndex: 0, // patched in the final pass
+        chapter: chapterBase,
+      });
+      continue;
+    }
+
+    // Filter whole-file silences into the chapter window and rebase to
+    // zero-origin so planCuts (which assumes [0, N]) can snap to them
+    // without reaching outside the window.
+    const rebased: SilenceInterval[] = [];
+    for (const s of silences) {
+      if (s.end <= win.start || s.start >= win.end) continue;
+      rebased.push({
+        start: Math.max(0, s.start - win.start),
+        end: Math.min(windowLen, s.end - win.start),
       });
     }
+
+    const subCuts = planCuts(windowLen, targetPartSec, playbackSpeed, rebased);
+    for (let si = 0; si < subCuts.length; si++) {
+      const sub = subCuts[si]!;
+      cuts.push({
+        startSec: win.start + sub.startSec,
+        endSec: win.start + sub.endSec,
+        partIndex: 0, // patched in the final pass
+        chapter: {
+          ...chapterBase,
+          part: { index: si + 1, count: subCuts.length },
+        },
+      });
+    }
+  }
+
+  // Assign contiguous global partIndex in a final flat pass so the
+  // parallel-encoding queue in the worker can rely on a gapless 0..N-1.
+  for (let i = 0; i < cuts.length; i++) {
+    cuts[i]!.partIndex = i;
   }
   return cuts;
 }

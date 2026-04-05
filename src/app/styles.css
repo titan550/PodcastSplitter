@@ -335,6 +335,11 @@ body {
   accent-color: var(--accent);
 }
 
+.settings-form__hint {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
 .settings-form__toggle {
   flex-direction: row;
   align-items: center;

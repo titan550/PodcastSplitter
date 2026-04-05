@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   deriveTitle,
-  sanitizeFilename,
+  slugFilenameSegment,
   partFilename,
   zipFilename,
   titleHash,
@@ -35,22 +35,45 @@ describe("deriveTitle", () => {
   });
 });
 
-describe("sanitizeFilename", () => {
-  it("removes illegal characters", () => {
-    expect(sanitizeFilename('test<>:"/file')).toBe("testfile");
+describe("slugFilenameSegment", () => {
+  it("lowercases and replaces spaces with underscore", () => {
+    expect(slugFilenameSegment("My Great Show")).toBe("my_great_show");
   });
 
-  it("collapses whitespace", () => {
-    expect(sanitizeFilename("a   b   c")).toBe("a b c");
+  it("normalizes accented letters to ASCII", () => {
+    expect(slugFilenameSegment("Café Story")).toBe("cafe_story");
   });
 
-  it("caps at 100 characters", () => {
-    const long = "a".repeat(200);
-    expect(sanitizeFilename(long)).toHaveLength(100);
+  it("drops emoji and other non-ASCII symbols", () => {
+    expect(slugFilenameSegment("Café ☕ Story")).toBe("cafe_story");
   });
 
-  it("removes control characters", () => {
-    expect(sanitizeFilename("hello\x00world\x1f")).toBe("helloworld");
+  it("strips apostrophes before punctuation collapse", () => {
+    expect(slugFilenameSegment("Don't Stop Believin'")).toBe(
+      "dont_stop_believin",
+    );
+  });
+
+  it("strips curly apostrophes too", () => {
+    expect(slugFilenameSegment("Don\u2019t Stop")).toBe("dont_stop");
+  });
+
+  it("collapses runs of punctuation into single underscore", () => {
+    expect(slugFilenameSegment("foo -- bar :: baz")).toBe("foo_bar_baz");
+  });
+
+  it("trims leading and trailing underscores", () => {
+    expect(slugFilenameSegment("  hello world  ")).toBe("hello_world");
+  });
+
+  it("returns empty string for inputs with no sluggable chars", () => {
+    expect(slugFilenameSegment("")).toBe("");
+    expect(slugFilenameSegment("///")).toBe("");
+    expect(slugFilenameSegment("☕☕☕")).toBe("");
+  });
+
+  it("collapses repeated underscores", () => {
+    expect(slugFilenameSegment("a___b")).toBe("a_b");
   });
 });
 
@@ -104,31 +127,29 @@ describe("truncateFilename", () => {
 describe("partFilename (time mode)", () => {
   const hashOf = (t: string) => titleHash(t);
 
-  it("formats with hash, index, title, and Part suffix", () => {
+  it("formats with hash, global index, slug, and part suffix", () => {
     const h = hashOf("My Podcast");
     expect(partFilename(0, 5, "My Podcast")).toBe(
-      `${h} 01 My Podcast - Part 01.mp3`,
+      `${h}_01_my_podcast__part_01.mp3`,
     );
   });
 
-  it("pads index to match total", () => {
+  it("pads global index and part number to match total", () => {
     const h = hashOf("My Podcast");
     expect(partFilename(9, 25, "My Podcast")).toBe(
-      `${h} 10 My Podcast - Part 10.mp3`,
+      `${h}_10_my_podcast__part_10.mp3`,
     );
   });
 
   it("pads to 3 digits for 100+ parts", () => {
     const h = hashOf("Show");
-    expect(partFilename(0, 100, "Show")).toBe(
-      `${h} 001 Show - Part 001.mp3`,
-    );
+    expect(partFilename(0, 100, "Show")).toBe(`${h}_001_show__part_001.mp3`);
   });
 
-  it("sanitizes title", () => {
+  it("slug-sanitizes title (drops punctuation)", () => {
     const h = hashOf('Bad: "Title"');
     expect(partFilename(0, 3, 'Bad: "Title"')).toBe(
-      `${h} 01 Bad Title - Part 01.mp3`,
+      `${h}_01_bad_title__part_01.mp3`,
     );
   });
 
@@ -137,8 +158,8 @@ describe("partFilename (time mode)", () => {
     const name = partFilename(0, 5, longTitle);
     expect(name.length).toBeLessThanOrEqual(150);
     expect(name.endsWith(".mp3")).toBe(true);
-    expect(name).toContain(" 01 "); // numeric index survives
-    expect(name).toContain(" - Part 01."); // suffix survives
+    expect(name).toContain("_01_"); // global index survives
+    expect(name).toContain("__part_01."); // part suffix survives
   });
 
   it("same title → same hash across parts", () => {
@@ -152,45 +173,173 @@ describe("partFilename (time mode)", () => {
     const b = partFilename(0, 5, "Podcast B");
     expect(a.slice(0, 4)).not.toBe(b.slice(0, 4));
   });
+
+  it("empty title falls back to 'untitled' slug", () => {
+    const h = hashOf("");
+    expect(partFilename(0, 3, "")).toBe(`${h}_01_untitled__part_01.mp3`);
+  });
 });
 
-describe("partFilename (chapter mode)", () => {
+describe("partFilename (chapter mode, single part)", () => {
   const hashOf = (t: string) => titleHash(t);
 
-  it("formats with chapter title appended", () => {
+  it("formats with ch_{NN} and chapter slug", () => {
     const h = hashOf("My Show");
-    expect(partFilename(0, 3, "My Show", "Introduction")).toBe(
-      `${h} 01 My Show - 01 Introduction.mp3`,
-    );
+    expect(
+      partFilename(0, 3, "My Show", {
+        title: "Introduction",
+        number: 1,
+        totalChapters: 3,
+      }),
+    ).toBe(`${h}_01_my_show__ch_01_introduction.mp3`);
   });
 
-  it("sanitizes chapter title", () => {
+  it("pads chapterNumber to match totalChapters", () => {
     const h = hashOf("Show");
-    expect(partFilename(0, 3, "Show", 'Chap/ter: "One"')).toBe(
-      `${h} 01 Show - 01 Chapter One.mp3`,
-    );
+    expect(
+      partFilename(0, 12, "Show", {
+        title: "Start",
+        number: 3,
+        totalChapters: 12,
+      }),
+    ).toBe(`${h}_01_show__ch_03_start.mp3`);
   });
 
-  it("falls back to 'Chapter N' when chapter title is empty after sanitization", () => {
+  it("pads chapterNumber to 3 digits for 100+ chapters", () => {
+    const h = hashOf("Audiobook");
+    expect(
+      partFilename(0, 150, "Audiobook", {
+        title: "First",
+        number: 3,
+        totalChapters: 150,
+      }),
+    ).toBe(`${h}_001_audiobook__ch_003_first.mp3`);
+  });
+
+  it("slug-sanitizes chapter title (drops punctuation)", () => {
     const h = hashOf("Show");
-    expect(partFilename(2, 5, "Show", "///")).toBe(
-      `${h} 03 Show - 03 Chapter 03.mp3`,
-    );
+    expect(
+      partFilename(0, 3, "Show", {
+        title: 'Chap/ter: "One"',
+        number: 1,
+        totalChapters: 3,
+      }),
+    ).toBe(`${h}_01_show__ch_01_chap_ter_one.mp3`);
   });
 
-  it("caps total length with long title and chapter", () => {
-    const longTitle = "X".repeat(400);
-    const longChapter = "Y".repeat(400);
-    const name = partFilename(0, 5, longTitle, longChapter);
+  it("falls back to 'chapter_{NN}' when chapter slug is empty", () => {
+    const h = hashOf("Show");
+    expect(
+      partFilename(2, 5, "Show", {
+        title: "///",
+        number: 3,
+        totalChapters: 5,
+      }),
+    ).toBe(`${h}_03_show__ch_03_chapter_03.mp3`);
+  });
+
+  it("apostrophes in chapter title collapse cleanly", () => {
+    const h = hashOf("Show");
+    expect(
+      partFilename(0, 3, "Show", {
+        title: "Don't Stop",
+        number: 1,
+        totalChapters: 3,
+      }),
+    ).toBe(`${h}_01_show__ch_01_dont_stop.mp3`);
+  });
+
+  it("non-ASCII chapter title slugs to ASCII", () => {
+    const h = hashOf("Show");
+    expect(
+      partFilename(0, 3, "Show", {
+        title: "Café ☕ Story",
+        number: 1,
+        totalChapters: 3,
+      }),
+    ).toBe(`${h}_01_show__ch_01_cafe_story.mp3`);
+  });
+});
+
+describe("partFilename (chapter mode, sub-part)", () => {
+  const hashOf = (t: string) => titleHash(t);
+
+  it("appends __p_{N}_of_{M} suffix", () => {
+    const h = hashOf("My Show");
+    expect(
+      partFilename(12, 20, "My Show", {
+        title: "The Real Story",
+        number: 3,
+        totalChapters: 5,
+        part: { index: 2, count: 4 },
+      }),
+    ).toBe(`${h}_13_my_show__ch_03_the_real_story__p_2_of_4.mp3`);
+  });
+
+  it("first sub-part uses p_1_of_K", () => {
+    const h = hashOf("Show");
+    const name = partFilename(0, 10, "Show", {
+      title: "Chapter One",
+      number: 1,
+      totalChapters: 3,
+      part: { index: 1, count: 3 },
+    });
+    expect(name).toBe(`${h}_01_show__ch_01_chapter_one__p_1_of_3.mp3`);
+  });
+});
+
+describe("partFilename length cap and truncation priority", () => {
+  it("caps pathologically long title and chapter, preserves structural fields", () => {
+    const longTitle = "x".repeat(400);
+    const longChapter = "y".repeat(400);
+    const name = partFilename(12, 100, longTitle, {
+      title: longChapter,
+      number: 3,
+      totalChapters: 50,
+      part: { index: 2, count: 4 },
+    });
     expect(name.length).toBeLessThanOrEqual(150);
     expect(name.endsWith(".mp3")).toBe(true);
+    // Structural fields survive:
+    expect(name).toMatch(/^[0-9a-z]{4}_013_/); // hash + global index
+    expect(name).toContain("__ch_03_"); // chapter number
+    expect(name).toContain("__p_2_of_4."); // sub-part suffix
+  });
+
+  it("truncates podcast slug first, keeps chapter slug intact when possible", () => {
+    const longTitle = "x".repeat(400);
+    const shortChapter = "short_chapter";
+    const name = partFilename(0, 5, longTitle, {
+      title: shortChapter,
+      number: 1,
+      totalChapters: 3,
+    });
+    expect(name.length).toBeLessThanOrEqual(150);
+    expect(name).toContain("short_chapter"); // chapter slug preserved
+  });
+
+  it("time-mode pathological title caps at 150 and preserves part suffix", () => {
+    const longTitle = "x".repeat(400);
+    const name = partFilename(0, 5, longTitle);
+    expect(name.length).toBeLessThanOrEqual(150);
+    expect(name).toContain("__part_01.mp3");
+  });
+
+  it("never emits spaces, parens, commas, or apostrophes", () => {
+    const name = partFilename(0, 3, "My Podcast's Great Show!", {
+      title: "Chapter: (One)",
+      number: 1,
+      totalChapters: 3,
+      part: { index: 1, count: 2 },
+    });
+    expect(name).not.toMatch(/[ ()',]/);
   });
 });
 
 describe("zipFilename", () => {
-  it("prepends hash to sanitized title", () => {
+  it("prepends hash to slugged title", () => {
     const h = titleHash("My Podcast");
-    expect(zipFilename("My Podcast")).toBe(`${h} My Podcast.zip`);
+    expect(zipFilename("My Podcast")).toBe(`${h}_my_podcast.zip`);
   });
 
   it("caps length at 150 chars", () => {

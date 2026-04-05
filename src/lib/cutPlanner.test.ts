@@ -1,5 +1,16 @@
 import { describe, it, expect } from "vitest";
 import { planCuts, planCutsFromChapters } from "./cutPlanner";
+import type { Chapter, SilenceInterval } from "../types";
+
+// Keep assertions terse: default target = 300, speed = 1, no silences.
+// Individual tests override when they need subdivision or snapping.
+const plan = (
+  chapters: Chapter[],
+  total: number,
+  target = 300,
+  speed = 1,
+  silences: SilenceInterval[] = [],
+) => planCutsFromChapters(chapters, total, target, speed, silences);
 
 describe("planCuts", () => {
   it("creates uniform cuts when no silences", () => {
@@ -94,11 +105,11 @@ describe("planCuts", () => {
 
 describe("planCutsFromChapters", () => {
   it("returns empty for empty input", () => {
-    expect(planCutsFromChapters([], 1000)).toEqual([]);
+    expect(plan([], 1000)).toEqual([]);
   });
 
-  it("converts ordered chapters to ordered cuts and carries titles", () => {
-    const cuts = planCutsFromChapters(
+  it("converts ordered chapters to ordered cuts and carries chapter info", () => {
+    const cuts = plan(
       [
         { title: "One", start: 0 },
         { title: "Two", start: 100 },
@@ -107,14 +118,34 @@ describe("planCutsFromChapters", () => {
       400,
     );
     expect(cuts).toEqual([
-      { startSec: 0, endSec: 100, partIndex: 0, chapterTitle: "One" },
-      { startSec: 100, endSec: 250, partIndex: 1, chapterTitle: "Two" },
-      { startSec: 250, endSec: 400, partIndex: 2, chapterTitle: "Three" },
+      {
+        startSec: 0,
+        endSec: 100,
+        partIndex: 0,
+        chapter: { title: "One", number: 1, totalChapters: 3 },
+      },
+      {
+        startSec: 100,
+        endSec: 250,
+        partIndex: 1,
+        chapter: { title: "Two", number: 2, totalChapters: 3 },
+      },
+      {
+        startSec: 250,
+        endSec: 400,
+        partIndex: 2,
+        chapter: { title: "Three", number: 3, totalChapters: 3 },
+      },
     ]);
   });
 
+  it("un-subdivided chapters have no chapter.part field", () => {
+    const cuts = plan([{ title: "Short", start: 0 }], 120);
+    expect(cuts[0]!.chapter?.part).toBeUndefined();
+  });
+
   it("sorts out-of-order chapters by start", () => {
-    const cuts = planCutsFromChapters(
+    const cuts = plan(
       [
         { title: "Third", start: 200 },
         { title: "First", start: 0 },
@@ -127,67 +158,65 @@ describe("planCutsFromChapters", () => {
   });
 
   it("prepends synthetic Intro when first chapter starts > 1s in", () => {
-    const cuts = planCutsFromChapters(
+    // Pass a very large target so Main doesn't subdivide — this test is
+    // about the Intro prepend behavior, not about subdivision.
+    const cuts = plan(
       [
         { title: "Main", start: 30 },
         { title: "Outro", start: 900 },
       ],
       1000,
+      100000,
     );
     expect(cuts).toHaveLength(3);
     expect(cuts[0]).toEqual({
       startSec: 0,
       endSec: 30,
       partIndex: 0,
-      chapterTitle: "Intro",
+      chapter: { title: "Intro", number: 1, totalChapters: 3 },
     });
     expect(cuts[1]!.startSec).toBe(30);
-    expect(cuts[1]!.chapterTitle).toBe("Main");
+    expect(cuts[1]!.chapter?.title).toBe("Main");
+    expect(cuts[1]!.chapter?.number).toBe(2);
   });
 
   it("does NOT prepend Intro when first chapter starts at 0 or within 1s", () => {
-    const a = planCutsFromChapters([{ title: "A", start: 0 }], 100);
+    const a = plan([{ title: "A", start: 0 }], 100);
     expect(a).toHaveLength(1);
     expect(a[0]!.startSec).toBe(0);
 
-    const b = planCutsFromChapters([{ title: "B", start: 0.5 }], 100);
+    const b = plan([{ title: "B", start: 0.5 }], 100);
     expect(b).toHaveLength(1);
     expect(b[0]!.startSec).toBe(0.5);
   });
 
   it("closes gaps by using next chapter's start as current's end", () => {
-    // Even if parser reported gaps, planCutsFromChapters derives end
-    // from the next chapter's start, so every second is covered.
-    const cuts = planCutsFromChapters(
+    const cuts = plan(
       [
         { title: "A", start: 0 },
         { title: "B", start: 50 },
       ],
       100,
     );
-    expect(cuts[0]!.endSec).toBe(50); // no gap
+    expect(cuts[0]!.endSec).toBe(50);
     expect(cuts[1]!.endSec).toBe(100);
   });
 
-  it("drops zero-length trailing chapter at exact file end", () => {
-    const cuts = planCutsFromChapters(
+  it("drops zero-length trailing chapter at exact file end and excludes it from totalChapters", () => {
+    const cuts = plan(
       [
         { title: "A", start: 0 },
-        { title: "B", start: 100 }, // total is also 100 — zero length
+        { title: "B", start: 100 },
       ],
       100,
     );
     expect(cuts).toHaveLength(1);
-    expect(cuts[0]).toEqual({
-      startSec: 0,
-      endSec: 100,
-      partIndex: 0,
-      chapterTitle: "A",
-    });
+    expect(cuts[0]!.chapter?.totalChapters).toBe(1);
+    expect(cuts[0]!.chapter?.number).toBe(1);
   });
 
   it("assigns contiguous partIndex after sort + intro prepend", () => {
-    const cuts = planCutsFromChapters(
+    const cuts = plan(
       [
         { title: "Later", start: 60 },
         { title: "Earlier", start: 20 },
@@ -195,5 +224,99 @@ describe("planCutsFromChapters", () => {
       120,
     );
     expect(cuts.map((c) => c.partIndex)).toEqual([0, 1, 2]);
+  });
+
+  // --- Subdivision ---
+
+  it("subdivides a long chapter into multiple sub-parts", () => {
+    // One 900 s chapter, target 300 s → 3 sub-parts of 300 s each.
+    const cuts = plan([{ title: "Long", start: 0 }], 900, 300);
+    expect(cuts).toHaveLength(3);
+    for (let i = 0; i < 3; i++) {
+      expect(cuts[i]!.chapter?.number).toBe(1);
+      expect(cuts[i]!.chapter?.totalChapters).toBe(1);
+      expect(cuts[i]!.chapter?.title).toBe("Long");
+      expect(cuts[i]!.chapter?.part).toEqual({ index: i + 1, count: 3 });
+      expect(cuts[i]!.partIndex).toBe(i);
+    }
+    expect(cuts.map((c) => [c.startSec, c.endSec])).toEqual([
+      [0, 300],
+      [300, 600],
+      [600, 900],
+    ]);
+  });
+
+  it("10% tolerance: chapter 5% over target stays one part", () => {
+    const cuts = plan([{ title: "Barely", start: 0 }], 315, 300);
+    expect(cuts).toHaveLength(1);
+    expect(cuts[0]!.chapter?.part).toBeUndefined();
+  });
+
+  it("10% tolerance: chapter 20% over target subdivides", () => {
+    const cuts = plan([{ title: "Over", start: 0 }], 360, 300);
+    expect(cuts.length).toBeGreaterThan(1);
+    expect(cuts[0]!.chapter?.part?.count).toBe(cuts.length);
+  });
+
+  it("sub-part boundaries snap to silences inside the chapter window", () => {
+    // Single long chapter at 0, spanning 0–900 (900 s), target 300 s.
+    // Silence at 295–297 (inside the window) should snap the first
+    // sub-cut to midpoint 296. A silence at 50–52 (outside the grace
+    // window of ±20 s around 300) must be ignored.
+    const silences: SilenceInterval[] = [
+      { start: 50, end: 52 },
+      { start: 295, end: 297 },
+    ];
+    const cuts = plan([{ title: "Long", start: 0 }], 900, 300, 1, silences);
+    expect(cuts.length).toBeGreaterThan(1);
+    expect(cuts[0]!.startSec).toBe(0);
+    expect(cuts[0]!.endSec).toBe(296);
+  });
+
+  it("mixed chapters: short + long + short produces 1 + K + 1 cuts with stable chapter number", () => {
+    // Chapter 1: 0–200 (short)
+    // Chapter 2: 200–1100 (long, 900 s → 3 sub-parts)
+    // Chapter 3: 1100–1300 (short)
+    const cuts = plan(
+      [
+        { title: "A", start: 0 },
+        { title: "B", start: 200 },
+        { title: "C", start: 1100 },
+      ],
+      1300,
+      300,
+    );
+    expect(cuts).toHaveLength(1 + 3 + 1);
+    expect(cuts.map((c) => c.chapter?.number)).toEqual([1, 2, 2, 2, 3]);
+    for (const c of cuts) expect(c.chapter?.totalChapters).toBe(3);
+    expect(cuts.map((c) => c.partIndex)).toEqual([0, 1, 2, 3, 4]);
+    expect(cuts[0]!.chapter?.part).toBeUndefined();
+    expect(cuts[1]!.chapter?.part?.count).toBe(3);
+    expect(cuts[4]!.chapter?.part).toBeUndefined();
+  });
+
+  it("subdivides the synthetic Intro when it exceeds the ceiling", () => {
+    // First real chapter at 1200 s → Intro is 0–1200, 900 s over target.
+    const cuts = plan(
+      [
+        { title: "Main", start: 1200 },
+        { title: "Outro", start: 1500 },
+      ],
+      1600,
+      300,
+    );
+    const introCuts = cuts.filter((c) => c.chapter?.number === 1);
+    expect(introCuts.length).toBe(4);
+    for (const c of introCuts) {
+      expect(c.chapter?.title).toBe("Intro");
+      expect(c.chapter?.part?.count).toBe(4);
+    }
+  });
+
+  it("speed-adjusted output duration drives the subdivision decision", () => {
+    // 400 s chapter at 1.5x → output duration 266.67 s, well under target 300.
+    const cuts = plan([{ title: "Fast", start: 0 }], 400, 300, 1.5);
+    expect(cuts).toHaveLength(1);
+    expect(cuts[0]!.chapter?.part).toBeUndefined();
   });
 });

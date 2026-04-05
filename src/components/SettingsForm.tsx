@@ -1,9 +1,11 @@
+import { useMemo } from "react";
 import type {
   Chapter,
   ProcessingSettings,
   RuntimeCapabilities,
   SplitMode,
 } from "../types";
+import { planCutsFromChapters } from "../lib/cutPlanner";
 import { AdvancedSettings } from "./AdvancedSettings";
 
 interface Props {
@@ -38,9 +40,28 @@ export function SettingsForm({
   const hasChapters = chapters.length >= 2;
   const useChapterMode = hasChapters && splitMode === "chapters";
 
-  const estimatedParts = useChapterMode
-    ? chapters.length
-    : Math.max(1, Math.ceil(durationSec / settings.targetPartDurationSec));
+  // Dry-run the planner for chapter mode so the estimate reflects
+  // subdivision (long chapters split by the target ceiling). Memoized
+  // because a 100+ chapter audiobook would otherwise re-sort + re-plan
+  // on every slider-drag render.
+  const estimatedParts = useMemo(() => {
+    if (useChapterMode) {
+      return planCutsFromChapters(
+        chapters,
+        durationSec,
+        settings.targetPartDurationSec,
+        settings.playbackSpeed,
+        [],
+      ).length;
+    }
+    return Math.max(1, Math.ceil(durationSec / settings.targetPartDurationSec));
+  }, [
+    useChapterMode,
+    chapters,
+    durationSec,
+    settings.targetPartDurationSec,
+    settings.playbackSpeed,
+  ]);
 
   return (
     <div className="settings-form">
@@ -105,21 +126,27 @@ export function SettingsForm({
         </div>
       )}
 
-      {!useChapterMode && (
-        <label className="settings-form__field">
-          <span>Minutes per part: {settings.targetPartDurationSec / 60}</span>
-          <input
-            type="range"
-            min={2}
-            max={15}
-            step={1}
-            value={settings.targetPartDurationSec / 60}
-            onChange={(e) =>
-              onChange({ targetPartDurationSec: Number(e.target.value) * 60 })
-            }
-          />
-        </label>
-      )}
+      <label className="settings-form__field">
+        <span>
+          {useChapterMode ? "Max minutes per part" : "Minutes per part"}:{" "}
+          {settings.targetPartDurationSec / 60}
+        </span>
+        <input
+          type="range"
+          min={2}
+          max={15}
+          step={1}
+          value={settings.targetPartDurationSec / 60}
+          onChange={(e) =>
+            onChange({ targetPartDurationSec: Number(e.target.value) * 60 })
+          }
+        />
+        {useChapterMode && (
+          <small className="settings-form__hint">
+            Long chapters are split at silence points to stay under this.
+          </small>
+        )}
+      </label>
 
       <label className="settings-form__field">
         <span>Playback speed: {settings.playbackSpeed.toFixed(2)}x</span>

@@ -39,23 +39,23 @@ describe("buildSpeechText (time mode)", () => {
   });
 });
 
-describe("buildSpeechText (chapter mode)", () => {
-  it("announces chapter index and title", () => {
+describe("buildSpeechText (chapter mode, un-subdivided)", () => {
+  it("announces chapter number (not global part index) and title", () => {
     expect(
       buildSpeechText({
         kind: "chapter",
-        partIndex: 0,
+        chapterNumber: 1,
         podcastTitle: "My Show",
         chapterTitle: "Introduction",
       }),
     ).toBe("Chapter 1 of My Show. Introduction");
   });
 
-  it("increments part index by 1", () => {
+  it("uses chapterNumber verbatim (not partIndex + 1)", () => {
     expect(
       buildSpeechText({
         kind: "chapter",
-        partIndex: 4,
+        chapterNumber: 5,
         podcastTitle: "Show",
         chapterTitle: "Fifth topic",
       }),
@@ -66,7 +66,7 @@ describe("buildSpeechText (chapter mode)", () => {
     expect(
       buildSpeechText({
         kind: "chapter",
-        partIndex: 0,
+        chapterNumber: 1,
         podcastTitle: "Show",
         chapterTitle: "",
       }),
@@ -77,7 +77,7 @@ describe("buildSpeechText (chapter mode)", () => {
     expect(
       buildSpeechText({
         kind: "chapter",
-        partIndex: 2,
+        chapterNumber: 3,
         podcastTitle: "Show",
         chapterTitle: "   ",
       }),
@@ -88,10 +88,60 @@ describe("buildSpeechText (chapter mode)", () => {
     expect(
       buildSpeechText({
         kind: "chapter",
-        partIndex: 0,
+        chapterNumber: 1,
         podcastTitle: "Show",
         chapterTitle: "  Topic  ",
       }),
     ).toBe("Chapter 1 of Show. Topic");
+  });
+});
+
+describe("buildSpeechText (chapter mode, subdivided)", () => {
+  it("sub-part 1 of K includes chapter title and 'part 1 of K'", () => {
+    expect(
+      buildSpeechText({
+        kind: "chapter",
+        chapterNumber: 3,
+        podcastTitle: "My Show",
+        chapterTitle: "The Real Story",
+        subPart: { index: 1, count: 4 },
+      }),
+    ).toBe("Chapter 3 of My Show. The Real Story, part 1 of 4");
+  });
+
+  it("sub-part 2+ drops the chapter title, keeps 'part M of K'", () => {
+    expect(
+      buildSpeechText({
+        kind: "chapter",
+        chapterNumber: 3,
+        podcastTitle: "My Show",
+        chapterTitle: "The Real Story",
+        subPart: { index: 2, count: 4 },
+      }),
+    ).toBe("Chapter 3 of My Show, part 2 of 4");
+  });
+
+  it("sub-part N of N announces the final sub-part", () => {
+    expect(
+      buildSpeechText({
+        kind: "chapter",
+        chapterNumber: 3,
+        podcastTitle: "My Show",
+        chapterTitle: "The Real Story",
+        subPart: { index: 4, count: 4 },
+      }),
+    ).toBe("Chapter 3 of My Show, part 4 of 4");
+  });
+
+  it("sub-part 1 with empty chapter title still announces the part counter", () => {
+    expect(
+      buildSpeechText({
+        kind: "chapter",
+        chapterNumber: 2,
+        podcastTitle: "Show",
+        chapterTitle: "",
+        subPart: { index: 1, count: 3 },
+      }),
+    ).toBe("Chapter 2 of Show, part 1 of 3");
   });
 });

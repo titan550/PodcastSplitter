@@ -1,3 +1,4 @@
+import type { ChapterCutInfo } from "../types";
 import { splitExt } from "./supportedFormats";
 
 const MAX_FILENAME = 150;
@@ -8,15 +9,36 @@ export function deriveTitle(file: File): string {
   return stem.replace(/[_-]+/g, " ").trim() || "Podcast";
 }
 
-export function sanitizeFilename(name: string): string {
-  return (
-    name
-      // eslint-disable-next-line no-control-regex -- strip filesystem-invalid control chars
-      .replace(/[<>:"/\\|?*\x00-\x1f]/g, "")
-      .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 100)
-  );
+/**
+ * Strict lowercase ASCII slug used for the variable portions of
+ * partFilename. The output is safe across cheap MP3 players, POSIX
+ * shells, rsync/cloud sync, ZIP tools, and every major filesystem.
+ *
+ * Rules (in order):
+ *   1. NFKD-normalize and strip combining marks so accented letters
+ *      collapse to their ASCII base ("café" → "cafe").
+ *   2. Lowercase.
+ *   3. Drop apostrophes / single-quotes *first* so "Don't" becomes
+ *      "dont", not "don_t".
+ *   4. Drop any remaining non-ASCII (emoji, symbols, CJK, …).
+ *   5. Replace any run of whitespace or punctuation with a single "_".
+ *   6. Collapse repeated "_".
+ *   7. Trim leading / trailing "_".
+ *
+ * Returns the empty string for inputs that contain no sluggable chars.
+ * Callers are responsible for substituting a context-aware fallback
+ * (partFilename does this for the podcast and chapter slugs).
+ */
+export function slugFilenameSegment(input: string): string {
+  return input
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/['\u2019]/g, "")
+    .replace(/[^\x20-\x7e]/g, "")
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "");
 }
 
 /**
@@ -44,73 +66,124 @@ export function titleHash(title: string): string {
   return (h >>> 0).toString(36).slice(0, 4).padStart(4, "0");
 }
 
-function clip(s: string, max: number): string {
-  if (s.length <= max) return s;
-  return s.slice(0, max).trimEnd();
-}
-
 /**
  * Last-resort safety net that caps a pre-composed filename at maxLen
- * while preserving the extension. Callers inside this module (partFilename,
- * zipFilename) budget ahead of time, so in practice only zipFilename with
- * a pathologically long title would hit this.
+ * while preserving the extension. partFilename budgets ahead of time and
+ * shouldn't hit this; zipFilename uses it for pathologically long titles.
  */
 export function truncateFilename(name: string, maxLen = MAX_FILENAME): string {
   if (name.length <= maxLen) return name;
   const ext = splitExt(name);
   const stem = ext ? name.slice(0, -ext.length) : name;
-  return stem.slice(0, maxLen - ext.length).trimEnd() + ext;
+  return stem.slice(0, maxLen - ext.length) + ext;
+}
+
+function padWidth(value: number, total: number): string {
+  const width = Math.max(String(total).length, 2);
+  return String(value).padStart(width, "0");
+}
+
+/** Trim a slug to fit a budget and strip any trailing underscore left
+ *  by a mid-token slice. Never returns a string longer than budget. */
+function fitSlug(slug: string, budget: number): string {
+  if (budget <= 0) return "";
+  if (slug.length <= budget) return slug;
+  return slug.slice(0, budget).replace(/_+$/, "");
 }
 
 /**
- * Deterministic filename for a single part.
+ * Deterministic filename for a single part. Slug-style lowercase ASCII
+ * with underscores only — robust across cheap MP3 players, shells,
+ * rsync/cloud sync, ZIP tools, and every major filesystem.
  *
- * Time mode:     "{hash} {num} {title} - Part {num}.mp3"
- * Chapter mode:  "{hash} {num} {title} - {num} {chapter}.mp3"
+ *  Time mode:
+ *    {hash}_{globalIndex}_{podcast_slug}__part_{partNumber}.mp3
+ *  Chapter, single part:
+ *    {hash}_{globalIndex}_{podcast_slug}__ch_{chapterNumber}_{chapter_slug}.mp3
+ *  Chapter, sub-part:
+ *    {hash}_{globalIndex}_{podcast_slug}__ch_{chapterNumber}_{chapter_slug}__p_{index}_of_{count}.mp3
  *
- * The leading hash groups parts of the same podcast together when an
- * audio player sorts files from multiple podcasts alphabetically. The
- * numeric index appears twice (once after the hash for sort order, once
- * at the end for users whose player truncates long filenames).
+ * The leading `globalIndex` guarantees that a basic lexicographic sort
+ * (in a ZIP, a file manager, or on a cheap MP3 player) reproduces
+ * playback order across the whole podcast, even when chapters are
+ * subdivided.
  *
- * Title and chapter fragments are budgeted inside this function so the
- * final name never exceeds MAX_FILENAME. Title gets up to 60% of the
- * available budget in chapter mode; chapter gets the rest.
+ * Structural fields (hash, global index, ch_/part_ number, sub-part
+ * suffix, extension) are preserved under the 150-char cap; the podcast
+ * slug is truncated first and the chapter slug second if overflow
+ * remains. In the unreachable worst case, both slugs collapse to empty
+ * and the structural fields still fit.
  */
 export function partFilename(
   partIndex: number,
   totalParts: number,
   title: string,
-  chapterTitle?: string,
+  chapter?: ChapterCutInfo,
 ): string {
   const hash = titleHash(title);
-  const padWidth = Math.max(String(totalParts).length, 2);
-  const num = String(partIndex + 1).padStart(padWidth, "0");
+  const globalIndex = padWidth(partIndex + 1, totalParts);
   const ext = ".mp3";
-  const safeTitleFull = sanitizeFilename(title);
+  const podcastSlug = slugFilenameSegment(title) || "untitled";
 
-  if (chapterTitle !== undefined) {
-    let safeChapter = sanitizeFilename(chapterTitle);
-    if (!safeChapter) safeChapter = `Chapter ${num}`;
-    // Fixed overhead: hash + " " + num + " " + " - " + num + " " + ext
-    const fixed = hash.length + 1 + num.length + 1 + 3 + num.length + 1 + ext.length;
-    const budget = MAX_FILENAME - fixed;
-    const titleBudget = Math.max(5, Math.floor(budget * 0.6));
-    const safeTitle = clip(safeTitleFull, titleBudget);
-    const chapterBudget = Math.max(5, budget - safeTitle.length);
-    safeChapter = clip(safeChapter, chapterBudget);
-    return `${hash} ${num} ${safeTitle} - ${num} ${safeChapter}${ext}`;
+  if (!chapter) {
+    const partNumber = padWidth(partIndex + 1, totalParts);
+    const structural = `__part_${partNumber}${ext}`;
+    const head = `${hash}_${globalIndex}_`;
+    const podcast = fitSlug(
+      podcastSlug,
+      MAX_FILENAME - head.length - structural.length,
+    );
+    const headOut = podcast ? `${head}${podcast}` : head.replace(/_$/, "");
+    return `${headOut}${structural}`;
   }
 
-  // Fixed overhead: hash + " " + num + " " + " - Part " + num + ext
-  const fixed = hash.length + 1 + num.length + 1 + 8 + num.length + ext.length;
-  const budget = MAX_FILENAME - fixed;
-  const safeTitle = clip(safeTitleFull, budget);
-  return `${hash} ${num} ${safeTitle} - Part ${num}${ext}`;
+  const chapterNumStr = padWidth(chapter.number, chapter.totalChapters);
+  const chapterSlug =
+    slugFilenameSegment(chapter.title) || `chapter_${chapterNumStr}`;
+
+  const subPartTail = chapter.part
+    ? `__p_${chapter.part.index}_of_${chapter.part.count}`
+    : "";
+  // Structural tail: "__ch_{NN}_" + chapterSlug + subPartTail + ".mp3"
+  // We split this into a fixed prefix ("__ch_{NN}_") and a sluggable
+  // chapter segment that can be truncated independently.
+  const chapterFixed = `__ch_${chapterNumStr}_`;
+  const structuralTailFixed = `${chapterFixed}${subPartTail}${ext}`;
+  const head = `${hash}_${globalIndex}_`;
+
+  // Budget: MAX_FILENAME = head + podcastSlug + chapterFixed + chapterSlugOut + subPartTail + ext
+  // Truncation priority: preserve all structural fields; truncate
+  // podcastSlug first, chapterSlug second only if the chapter on its own
+  // still overflows.
+  const slugBudget = MAX_FILENAME - head.length - structuralTailFixed.length;
+
+  let podcast = podcastSlug;
+  let chapterSlugOut = chapterSlug;
+
+  if (podcast.length + chapterSlugOut.length > slugBudget) {
+    if (chapterSlugOut.length >= slugBudget) {
+      podcast = "";
+      chapterSlugOut = fitSlug(chapterSlugOut, slugBudget);
+    } else {
+      podcast = fitSlug(podcast, slugBudget - chapterSlugOut.length);
+    }
+  }
+
+  // Empty podcast slug collapses "head" ("{hash}_{globalIndex}_") to end
+  // in a single underscore before the "__ch_" boundary, which would
+  // produce "___ch_" — strip the trailing underscore from head in that
+  // case so the separator remains the intended "__".
+  const headOut = podcast ? `${head}${podcast}` : head.replace(/_$/, "");
+  // Empty chapter slug collapses "__ch_{NN}_" to "__ch_{NN}" so we don't
+  // end with a dangling underscore before the sub-part tail or ext.
+  const chapterSegment = chapterSlugOut
+    ? `${chapterFixed}${chapterSlugOut}`
+    : chapterFixed.replace(/_$/, "");
+  return `${headOut}${chapterSegment}${subPartTail}${ext}`;
 }
 
 export function zipFilename(title: string): string {
   const hash = titleHash(title);
-  const safe = sanitizeFilename(title);
-  return truncateFilename(`${hash} ${safe}.zip`);
+  const slug = slugFilenameSegment(title) || "untitled";
+  return truncateFilename(`${hash}_${slug}.zip`);
 }
