@@ -18,6 +18,9 @@ export interface ProcessingSettings {
   // Strip silences longer than skipLongSilenceMinSec from each encoded part.
   skipLongSilences: boolean;
   skipLongSilenceMinSec: number;
+  // "source" preserves source sample rate + channel layout (default).
+  // "voice" forces 22.05 kHz mono for sports-headphone use.
+  audioProfile: "source" | "voice";
 }
 
 export const DEFAULT_SETTINGS: ProcessingSettings = {
@@ -32,6 +35,7 @@ export const DEFAULT_SETTINGS: ProcessingSettings = {
   parallelEncoding: 0, // auto
   skipLongSilences: false,
   skipLongSilenceMinSec: 3,
+  audioProfile: "source",
 };
 
 // --- Metadata ---
@@ -41,13 +45,45 @@ export interface Chapter {
   start: number; // seconds from start of file
 }
 
+export interface CoverArt {
+  data: Uint8Array;
+  mimeType: "image/jpeg";
+}
+
 export interface PodcastMetadata {
   title: string;
   durationSec: number;
-  bitrate: number | undefined;
-  sampleRate: number | undefined;
   fileSizeBytes: number;
   chapters: Chapter[];
+  // Stream properties
+  sampleRate: number | undefined;
+  numberOfChannels: number | undefined;
+  bitrate: number | undefined;
+  // Tag passthrough
+  artist: string | undefined;
+  albumartist: string | undefined;
+  album: string | undefined;
+  date: string | undefined;
+  genre: string | undefined;
+  comment: string | undefined;
+  composer: string | undefined;
+  publisher: string | undefined;
+  copyright: string | undefined;
+  language: string | undefined;
+  coverArt: CoverArt | undefined;
+}
+
+// Per-file source metadata passed through START_JOB to the worker.
+// Derived from PodcastMetadata minus the UI-only fields. Transient —
+// never persisted via jobStore.
+export type SourceMetadata = Omit<
+  PodcastMetadata,
+  "title" | "durationSec" | "fileSizeBytes" | "chapters" | "bitrate"
+>;
+
+export interface Tag {
+  key: string;
+  value: string;
 }
 
 export type SplitMode = "time" | "chapters";
@@ -88,6 +124,7 @@ export type WorkerInMessage =
         durationSec: number;
         splitMode: SplitMode;
         chapters: Chapter[]; // empty when splitMode === "time"
+        sourceMetadata: SourceMetadata;
       };
     }
   | {

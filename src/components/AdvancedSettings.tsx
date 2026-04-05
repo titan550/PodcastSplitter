@@ -42,16 +42,51 @@ export function AdvancedSettings({ settings, capabilities, onChange }: Props) {
     <details open className="advanced-settings">
       <summary onClick={() => setOpen(false)}>Advanced settings</summary>
 
+      <div className="settings-form__field">
+        <span>Audio quality</span>
+        <div className="split-mode-toggle">
+          <button
+            type="button"
+            className={`split-mode-toggle__btn ${
+              settings.audioProfile === "source"
+                ? "split-mode-toggle__btn--active"
+                : ""
+            }`}
+            onClick={() => onChange({ audioProfile: "source" })}
+          >
+            Source
+          </button>
+          <button
+            type="button"
+            className={`split-mode-toggle__btn ${
+              settings.audioProfile === "voice"
+                ? "split-mode-toggle__btn--active"
+                : ""
+            }`}
+            onClick={() => onChange({ audioProfile: "voice" })}
+          >
+            Voice
+          </button>
+        </div>
+        <small className="settings-form__hint">
+          {settings.audioProfile === "source"
+            ? "Preserve the original sample rate and channels."
+            : "Downmix to 22 kHz mono. Smallest files, optimized for sports headphones."}
+        </small>
+      </div>
+
       <label className="settings-form__field">
         <span>Output bitrate</span>
         <select
           value={settings.outputBitrate}
           onChange={(e) => onChange({ outputBitrate: e.target.value })}
         >
-          <option value="64k">64k (speech-optimized)</option>
+          <option value="64k">64k</option>
           <option value="96k">96k</option>
           <option value="128k">128k (default)</option>
           <option value="192k">192k</option>
+          <option value="256k">256k</option>
+          <option value="320k">320k</option>
         </select>
       </label>
 

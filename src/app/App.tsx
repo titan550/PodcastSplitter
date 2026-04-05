@@ -6,7 +6,7 @@ import { ProgressPanel } from "../components/ProgressPanel";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { Footer } from "../components/Footer";
 import { Logo } from "../components/Logo";
-import { extractMetadata } from "../lib/metadata";
+import { extractMetadata, toSourceMetadata } from "../lib/metadata";
 import { zipFilename } from "../lib/filename";
 import { saveSettings } from "../lib/jobStore";
 import { detectCapabilities, pickParallelEncoding } from "../lib/runtimeCapabilities";
@@ -230,6 +230,7 @@ export function App() {
           title: meta.title,
           durationSec: meta.durationSec,
           chapters: meta.chapters,
+          sourceMetadata: toSourceMetadata(meta),
         });
         // If user has an explicit parallelEncoding that's unsafe for this
         // file, downgrade to the safe max. Auto mode (0) is resolved at
@@ -259,7 +260,7 @@ export function App() {
   );
 
   const handleStart = useCallback(() => {
-    if (!state.file) return;
+    if (!state.file || !state.sourceMetadata) return;
     dispatch({ type: "START" });
     requestWakeLock();
 
@@ -294,6 +295,7 @@ export function App() {
         durationSec: durationRef.current,
         splitMode: state.splitMode,
         chapters: state.splitMode === "chapters" ? state.chapters : [],
+        sourceMetadata: state.sourceMetadata,
       },
     });
   }, [
@@ -302,6 +304,7 @@ export function App() {
     state.settings,
     state.splitMode,
     state.chapters,
+    state.sourceMetadata,
     requestWakeLock,
     releaseWakeLock,
     initTTS,

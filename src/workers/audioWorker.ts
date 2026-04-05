@@ -6,16 +6,17 @@ import type {
   Chapter,
   SplitMode,
   CutPoint,
+  SourceMetadata,
 } from "../types";
 import { detectCapabilities } from "../lib/runtimeCapabilities";
 import {
   getFFmpeg,
   getFFmpegPool,
   terminateFFmpeg,
-  encodePartWithPrefix,
-  encodePartNoPrefix,
+  encodePart,
   cleanupFiles,
 } from "../lib/ffmpegClient";
+import { buildPartTags } from "../lib/tagBuilder";
 import { detectSilences } from "../lib/silenceDetection";
 import {
   anyChapterWillSubdivide,
@@ -104,12 +105,15 @@ function computeOverallPct(
   }
 }
 
+const COVER_FILE = "cover.jpg";
+
 async function runPipeline(
   file: File,
   settings: ProcessingSettings,
   totalDuration: number,
   splitMode: SplitMode,
   chapters: Chapter[],
+  sourceMetadata: SourceMetadata,
 ): Promise<void> {
   if (totalDuration <= 0) {
     throw new Error("Could not determine audio duration");
@@ -223,10 +227,20 @@ async function runPipeline(
   // fresh copy of the source to each. Memory cost: parallelism × sourceSize
   // in WASM heaps.
   const pool = await getFFmpegPool(parallelism);
+  const hasCover = !!sourceMetadata.coverArt;
+  // Retain cover bytes for slice() copies — ff.writeFile detaches the
+  // backing buffer, so each instance needs a fresh copy.
+  const coverBytes = sourceMetadata.coverArt?.data ?? null;
   await Promise.all(
     pool.map(async (ff, idx) => {
-      if (idx === 0) return; // ff0 already has the file
+      if (idx === 0) {
+        if (hasCover)
+          await ff.writeFile(COVER_FILE, new Uint8Array(coverBytes!.buffer.slice(0)));
+        return;
+      }
       await ff.writeFile(INPUT_FILE, new Uint8Array(sourceBuffer!.slice(0)));
+      if (hasCover)
+        await ff.writeFile(COVER_FILE, new Uint8Array(coverBytes!.buffer.slice(0)));
     }),
   );
   // Release the retained source buffer now that every instance has a copy.
@@ -284,38 +298,43 @@ async function runPipeline(
         }
       : undefined;
 
+    const tags = buildPartTags({
+      cut,
+      totalParts,
+      podcastTitle: settings.podcastTitle,
+      source: sourceMetadata,
+    });
+
+    let prefixFile: string | undefined;
     if (settings.spokenPrefix) {
       const wavBlob = await ttsPromises[partIdx]!;
       const wavData = new Uint8Array(await wavBlob.arrayBuffer());
-      const prefixFile = `prefix_${partIdx}.wav`;
+      prefixFile = `prefix_${partIdx}.wav`;
       await ff.writeFile(prefixFile, wavData);
-      await encodePartWithPrefix(ff, {
-        prefixFile,
-        inputFile: INPUT_FILE,
-        startSec: cut.startSec,
-        endSec: cut.endSec,
-        speed: settings.playbackSpeed,
-        bitrate: settings.outputBitrate,
-        outputFile,
-        skipSilence,
-      });
-      const partData = await ff.readFile(outputFile);
-      completedParts.set(partIdx, partData as Uint8Array);
-      await cleanupFiles(ff, prefixFile, outputFile);
-    } else {
-      await encodePartNoPrefix(ff, {
-        inputFile: INPUT_FILE,
-        startSec: cut.startSec,
-        endSec: cut.endSec,
-        speed: settings.playbackSpeed,
-        bitrate: settings.outputBitrate,
-        outputFile,
-        skipSilence,
-      });
-      const partData = await ff.readFile(outputFile);
-      completedParts.set(partIdx, partData as Uint8Array);
-      await cleanupFiles(ff, outputFile);
     }
+
+    await encodePart(ff, {
+      inputFile: INPUT_FILE,
+      prefixFile,
+      coverFile: hasCover ? COVER_FILE : undefined,
+      startSec: cut.startSec,
+      endSec: cut.endSec,
+      speed: settings.playbackSpeed,
+      bitrate: settings.outputBitrate,
+      outputFile,
+      skipSilence,
+      sourceSampleRate: sourceMetadata.sampleRate,
+      sourceChannels: sourceMetadata.numberOfChannels,
+      audioProfile: settings.audioProfile,
+      tags,
+    });
+
+    const partData = await ff.readFile(outputFile);
+    completedParts.set(partIdx, partData as Uint8Array);
+
+    const cleanFiles = [outputFile];
+    if (prefixFile) cleanFiles.push(prefixFile);
+    await cleanupFiles(ff, ...cleanFiles);
 
     partsCompleted++;
     progress(
@@ -350,7 +369,8 @@ async function runPipeline(
   const zipBlob = await finalizeZip();
   progress("zipping", 100, totalParts, undefined, "ZIP ready");
 
-  await Promise.all(pool.map((ff) => cleanupFiles(ff, INPUT_FILE)));
+  const finalClean = hasCover ? [INPUT_FILE, COVER_FILE] : [INPUT_FILE];
+  await Promise.all(pool.map((ff) => cleanupFiles(ff, ...finalClean)));
   terminateFFmpeg();
 
   post({ type: "COMPLETE", payload: { zipBlob } });
@@ -368,6 +388,7 @@ self.onmessage = async (e: MessageEvent<WorkerInMessage>) => {
         e.data.payload.durationSec,
         e.data.payload.splitMode,
         e.data.payload.chapters,
+        e.data.payload.sourceMetadata,
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

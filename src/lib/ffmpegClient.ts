@@ -73,93 +73,18 @@ export function terminateFFmpeg(): void {
   }
 }
 
-export interface SkipSilenceOptions {
-  minDurationSec: number;
-  thresholdDb: number;
-}
+import { buildEncodeArgs, type EncodeArgsInput } from "./ffmpegEncodeArgs";
 
-export interface EncodePartOptions {
-  inputFile: string;
-  startSec: number;
-  endSec: number;
-  speed: number;
-  bitrate: string;
-  outputFile: string;
-  skipSilence?: SkipSilenceOptions;
-}
-
-export interface EncodePartWithPrefixOptions extends EncodePartOptions {
-  prefixFile: string;
-}
-
-// Builds a ffmpeg `silenceremove` fragment that strips silences longer
-// than minDurationSec below thresholdDb. Empty string when disabled.
-// Runs AFTER atempo so the threshold applies to the sped-up signal —
-// atempo preserves amplitude, so this is equivalent in practice.
-function buildSilenceRemoveStep(skip?: SkipSilenceOptions): string {
-  if (!skip) return "";
-  return `,silenceremove=stop_periods=-1:stop_duration=${skip.minDurationSec.toFixed(
-    2,
-  )}:stop_threshold=${skip.thresholdDb}dB`;
-}
-
-export async function encodePartWithPrefix(
+/**
+ * Encode one part. Handles both with-prefix and no-prefix paths — the
+ * distinction is encoded in `opts.prefixFile`. All arg construction is
+ * delegated to the pure `buildEncodeArgs` function.
+ */
+export async function encodePart(
   ff: FFmpeg,
-  opts: EncodePartWithPrefixOptions,
+  opts: EncodeArgsInput,
 ): Promise<void> {
-  const { prefixFile, inputFile, startSec, endSec, speed, bitrate, outputFile, skipSilence } =
-    opts;
-  const duration = endSec - startSec;
-  const silenceStep = buildSilenceRemoveStep(skipSilence);
-  await ff.exec([
-    "-i",
-    prefixFile,
-    "-ss",
-    startSec.toFixed(3),
-    "-t",
-    duration.toFixed(3),
-    "-i",
-    inputFile,
-    "-filter_complex",
-    `[0:a]aresample=22050,aformat=sample_fmts=fltp:channel_layouts=mono,apad=pad_dur=0.5[pfx];` +
-      `[1:a]atempo=${speed}${silenceStep},aresample=22050,aformat=sample_fmts=fltp:channel_layouts=mono[seg];` +
-      `[pfx][seg]concat=n=2:v=0:a=1[out]`,
-    "-map",
-    "[out]",
-    "-c:a",
-    "libmp3lame",
-    "-b:a",
-    bitrate,
-    outputFile,
-  ]);
-}
-
-export async function encodePartNoPrefix(
-  ff: FFmpeg,
-  opts: EncodePartOptions,
-): Promise<void> {
-  const { inputFile, startSec, endSec, speed, bitrate, outputFile, skipSilence } = opts;
-  const duration = endSec - startSec;
-  const silenceStep = buildSilenceRemoveStep(skipSilence);
-  await ff.exec([
-    "-ss",
-    startSec.toFixed(3),
-    "-t",
-    duration.toFixed(3),
-    "-i",
-    inputFile,
-    "-af",
-    `atempo=${speed}${silenceStep}`,
-    "-ar",
-    "22050",
-    "-ac",
-    "1",
-    "-c:a",
-    "libmp3lame",
-    "-b:a",
-    bitrate,
-    outputFile,
-  ]);
+  await ff.exec(buildEncodeArgs(opts));
 }
 
 export async function cleanupFiles(

@@ -6,6 +6,7 @@ import type {
   ErrorPayload,
   RuntimeCapabilities,
   SplitMode,
+  SourceMetadata,
 } from "../types";
 import { DEFAULT_SETTINGS } from "../types";
 import { loadSettings } from "../lib/jobStore";
@@ -31,6 +32,7 @@ export interface JobState {
   // wholesale localStorage serialization in jobStore.saveSettings.
   splitMode: SplitMode;
   chapters: Chapter[];
+  sourceMetadata: SourceMetadata | null;
 }
 
 export type JobAction =
@@ -40,6 +42,7 @@ export type JobAction =
       title: string;
       durationSec: number;
       chapters: Chapter[];
+      sourceMetadata: SourceMetadata;
     }
   | { type: "SETTINGS_CHANGED"; settings: Partial<ProcessingSettings> }
   | { type: "SPLIT_MODE_CHANGED"; splitMode: SplitMode }
@@ -61,6 +64,7 @@ const initialState: JobState = {
   capabilities: null,
   splitMode: "time",
   chapters: [],
+  sourceMetadata: null,
 };
 
 function reducer(state: JobState, action: JobAction): JobState {
@@ -76,6 +80,7 @@ function reducer(state: JobState, action: JobAction): JobState {
         },
         chapters: action.chapters,
         splitMode: action.chapters.length >= 2 ? "chapters" : "time",
+        sourceMetadata: action.sourceMetadata,
         error: null,
         zipUrl: null,
       };
