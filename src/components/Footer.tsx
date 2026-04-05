@@ -1,7 +1,6 @@
 import { useRef } from "react";
 
-// TODO: drop in real repo URL once the project is public
-const GITHUB_URL = "#";
+const GITHUB_URL = "https://github.com/titan550/PodcastSplitter";
 const COFFEE_URL = "https://buymeacoffee.com/tinkerlake";
 
 export function Footer() {
