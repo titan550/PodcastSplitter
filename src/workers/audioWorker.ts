@@ -3,6 +3,9 @@ import type {
   WorkerOutMessage,
   ProcessingSettings,
   Phase,
+  Chapter,
+  SplitMode,
+  CutPoint,
 } from "../types";
 import { detectCapabilities } from "../lib/runtimeCapabilities";
 import {
@@ -14,22 +17,16 @@ import {
   cleanupFiles,
 } from "../lib/ffmpegClient";
 import { detectSilences } from "../lib/silenceDetection";
-import { planCuts } from "../lib/cutPlanner";
+import { planCuts, planCutsFromChapters } from "../lib/cutPlanner";
 import { buildSpeechText } from "../lib/tts/speechText";
 import { partFilename } from "../lib/filename";
+import { splitExt } from "../lib/supportedFormats";
 import { createZipWriter, addPartToZip, finalizeZip } from "../lib/exportZip";
-
-const INPUT_FILE = "input.mp3";
 
 let currentPhase: Phase = "loading";
 
-// Kick off ffmpeg loading as soon as the worker module is evaluated, so
-// WASM fetching overlaps with the main thread's TTS model download and
-// user's file selection. getFFmpeg is idempotent — subsequent calls
-// return the same loaded instance.
-void getFFmpeg(false).catch(() => {
-  // Errors surface later when runPipeline awaits getFFmpeg again
-});
+// ffmpeg is loaded lazily inside runPipeline; its startup cost overlaps
+// with the main-thread TTS model download triggered at mount.
 
 // TTS relay: worker sends multiple concurrent requests identified by id.
 // Main thread processes them serially and pushes results back as each
@@ -107,6 +104,8 @@ async function runPipeline(
   file: File,
   settings: ProcessingSettings,
   totalDuration: number,
+  splitMode: SplitMode,
+  chapters: Chapter[],
 ): Promise<void> {
   if (totalDuration <= 0) {
     throw new Error("Could not determine audio duration");
@@ -114,8 +113,11 @@ async function runPipeline(
 
   const parallelism = settings.parallelEncoding;
 
+  // Preserve the source extension so ffmpeg picks the right demuxer.
+  const INPUT_FILE = `input${splitExt(file.name).toLowerCase() || ".mp3"}`;
+
   progress("loading", 0, 0, undefined, "Loading audio engine...");
-  const ff0 = await getFFmpeg(settings.preferMultiThread);
+  const ff0 = await getFFmpeg();
   progress("loading", 100, 0, undefined, "Audio engine ready");
 
   progress("analyzing", 0, 0, undefined, "Reading audio file...");
@@ -125,28 +127,36 @@ async function runPipeline(
   let sourceBuffer: ArrayBuffer | null = await file.arrayBuffer();
   await ff0.writeFile(INPUT_FILE, new Uint8Array(sourceBuffer.slice(0)));
 
-  progress("analyzing", 30, 0, undefined, "Detecting silences...");
-  const silences = await detectSilences(
-    ff0,
-    INPUT_FILE,
-    settings.silenceThresholdDb,
-    settings.silenceMinDurationSec,
-  );
-  progress(
-    "analyzing",
-    100,
-    0,
-    undefined,
-    `Found ${silences.length} silence intervals`,
-  );
-
-  progress("planning", 0, 0, undefined, "Planning segments...");
-  const cuts = planCuts(
-    totalDuration,
-    settings.targetPartDurationSec,
-    settings.playbackSpeed,
-    silences,
-  );
+  // Silence detection is only used for time-based cut snapping. In
+  // chapter mode the cut points are already known, so we skip it.
+  let cuts: CutPoint[];
+  if (splitMode === "chapters" && chapters.length > 0) {
+    progress("analyzing", 100, 0, undefined, "Using chapter boundaries");
+    progress("planning", 0, 0, undefined, "Planning from chapters...");
+    cuts = planCutsFromChapters(chapters, totalDuration);
+  } else {
+    progress("analyzing", 30, 0, undefined, "Detecting silences...");
+    const silences = await detectSilences(
+      ff0,
+      INPUT_FILE,
+      settings.silenceThresholdDb,
+      settings.silenceMinDurationSec,
+    );
+    progress(
+      "analyzing",
+      100,
+      0,
+      undefined,
+      `Found ${silences.length} silence intervals`,
+    );
+    progress("planning", 0, 0, undefined, "Planning segments...");
+    cuts = planCuts(
+      totalDuration,
+      settings.targetPartDurationSec,
+      settings.playbackSpeed,
+      silences,
+    );
+  }
   const totalParts = cuts.length;
   progress(
     "planning",
@@ -163,12 +173,20 @@ async function runPipeline(
   const ttsPromises: Promise<Blob>[] = settings.spokenPrefix
     ? cuts.map((cut, i) =>
         requestTTS(
-          buildSpeechText(
-            i,
-            settings.podcastTitle,
-            cut.startSec,
-            cut.endSec,
-          ),
+          cut.chapterTitle !== undefined
+            ? buildSpeechText({
+                kind: "chapter",
+                partIndex: i,
+                podcastTitle: settings.podcastTitle,
+                chapterTitle: cut.chapterTitle,
+              })
+            : buildSpeechText({
+                kind: "time",
+                partIndex: i,
+                podcastTitle: settings.podcastTitle,
+                startSec: cut.startSec,
+                endSec: cut.endSec,
+              }),
         ),
       )
     : [];
@@ -176,7 +194,7 @@ async function runPipeline(
   // Load additional ffmpeg instances for parallel encoding and write a
   // fresh copy of the source to each. Memory cost: parallelism × sourceSize
   // in WASM heaps.
-  const pool = await getFFmpegPool(parallelism, settings.preferMultiThread);
+  const pool = await getFFmpegPool(parallelism);
   await Promise.all(
     pool.map(async (ff, idx) => {
       if (idx === 0) return; // ff0 already has the file
@@ -186,22 +204,38 @@ async function runPipeline(
   // Release the retained source buffer now that every instance has a copy.
   sourceBuffer = null;
 
-  // 8. Queue-based parallel encoding. Each ffmpeg instance pulls the next
+  // Queue-based parallel encoding. Each ffmpeg instance pulls the next
   // available part index from a shared counter and encodes it. Completed
-  // parts are buffered and added to the ZIP in strict part-index order.
+  // parts are buffered and added to the ZIP in strict part-index order
+  // via a promise-chain mutex — without the chain, two workerLoops can
+  // observe the same nextZipIndex and double-add the part.
   const completedParts = new Map<number, Uint8Array>();
   let nextZipIndex = 0;
   let partCursor = 0;
   let partsCompleted = 0;
+  let flushChain: Promise<void> = Promise.resolve();
 
-  async function flushReadyZipEntries(): Promise<void> {
-    while (completedParts.has(nextZipIndex)) {
-      const data = completedParts.get(nextZipIndex)!;
-      const fname = partFilename(nextZipIndex, totalParts, settings.podcastTitle);
-      await addPartToZip(fname, data);
-      completedParts.delete(nextZipIndex);
-      nextZipIndex++;
-    }
+  function flushReadyZipEntries(): Promise<void> {
+    // Deliberately do NOT .catch the chain: if addPartToZip ever throws
+    // the ZIP is already corrupt, so the rejection must propagate through
+    // every subsequent flush caller, fail Promise.all(workerLoops), and
+    // abort runPipeline via the outer try/catch. Silently continuing the
+    // chain would produce a broken ZIP with no error surfaced to the user.
+    flushChain = flushChain.then(async () => {
+      while (completedParts.has(nextZipIndex)) {
+        const data = completedParts.get(nextZipIndex)!;
+        const fname = partFilename(
+          nextZipIndex,
+          totalParts,
+          settings.podcastTitle,
+          cuts[nextZipIndex]!.chapterTitle,
+        );
+        await addPartToZip(fname, data);
+        completedParts.delete(nextZipIndex);
+        nextZipIndex++;
+      }
+    });
+    return flushChain;
   }
 
   const parallelLabel =
@@ -214,34 +248,41 @@ async function runPipeline(
     const cut = cuts[partIdx]!;
     const outputFile = `part_${partIdx}.mp3`;
 
+    const skipSilence = settings.skipLongSilences
+      ? {
+          minDurationSec: settings.skipLongSilenceMinSec,
+          thresholdDb: settings.silenceThresholdDb,
+        }
+      : undefined;
+
     if (settings.spokenPrefix) {
       const wavBlob = await ttsPromises[partIdx]!;
       const wavData = new Uint8Array(await wavBlob.arrayBuffer());
       const prefixFile = `prefix_${partIdx}.wav`;
       await ff.writeFile(prefixFile, wavData);
-      await encodePartWithPrefix(
-        ff,
+      await encodePartWithPrefix(ff, {
         prefixFile,
-        INPUT_FILE,
-        cut.startSec,
-        cut.endSec,
-        settings.playbackSpeed,
-        settings.outputBitrate,
+        inputFile: INPUT_FILE,
+        startSec: cut.startSec,
+        endSec: cut.endSec,
+        speed: settings.playbackSpeed,
+        bitrate: settings.outputBitrate,
         outputFile,
-      );
+        skipSilence,
+      });
       const partData = await ff.readFile(outputFile);
       completedParts.set(partIdx, partData as Uint8Array);
       await cleanupFiles(ff, prefixFile, outputFile);
     } else {
-      await encodePartNoPrefix(
-        ff,
-        INPUT_FILE,
-        cut.startSec,
-        cut.endSec,
-        settings.playbackSpeed,
-        settings.outputBitrate,
+      await encodePartNoPrefix(ff, {
+        inputFile: INPUT_FILE,
+        startSec: cut.startSec,
+        endSec: cut.endSec,
+        speed: settings.playbackSpeed,
+        bitrate: settings.outputBitrate,
         outputFile,
-      );
+        skipSilence,
+      });
       const partData = await ff.readFile(outputFile);
       completedParts.set(partIdx, partData as Uint8Array);
       await cleanupFiles(ff, outputFile);
@@ -296,6 +337,8 @@ self.onmessage = async (e: MessageEvent<WorkerInMessage>) => {
         e.data.payload.file,
         e.data.payload.settings,
         e.data.payload.durationSec,
+        e.data.payload.splitMode,
+        e.data.payload.chapters,
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

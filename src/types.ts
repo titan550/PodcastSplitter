@@ -9,13 +9,15 @@ export interface ProcessingSettings {
   voiceId: string;
   silenceThresholdDb: number;
   silenceMinDurationSec: number;
-  preferMultiThread: boolean;
   // Number of parallel ffmpeg instances for encoding parts.
   // 0 = auto (picked based on file size + device capabilities at job start)
   // 1-4 = explicit user choice
   // Each instance holds a full copy of the source file in WASM heap,
   // so N=2 means ~2× source size in memory.
   parallelEncoding: number;
+  // Strip silences longer than skipLongSilenceMinSec from each encoded part.
+  skipLongSilences: boolean;
+  skipLongSilenceMinSec: number;
 }
 
 export const DEFAULT_SETTINGS: ProcessingSettings = {
@@ -27,11 +29,17 @@ export const DEFAULT_SETTINGS: ProcessingSettings = {
   voiceId: "en_US-amy-low",
   silenceThresholdDb: -30,
   silenceMinDurationSec: 0.5,
-  preferMultiThread: false,
   parallelEncoding: 0, // auto
+  skipLongSilences: false,
+  skipLongSilenceMinSec: 3,
 };
 
 // --- Metadata ---
+
+export interface Chapter {
+  title: string;
+  start: number; // seconds from start of file
+}
 
 export interface PodcastMetadata {
   title: string;
@@ -39,7 +47,10 @@ export interface PodcastMetadata {
   bitrate: number | undefined;
   sampleRate: number | undefined;
   fileSizeBytes: number;
+  chapters: Chapter[];
 }
+
+export type SplitMode = "time" | "chapters";
 
 // --- Cut planning ---
 
@@ -52,6 +63,10 @@ export interface CutPoint {
   startSec: number;
   endSec: number;
   partIndex: number;
+  // Populated only in chapter-mode plans; undefined for time-based cuts.
+  // Carried on the cut so the worker doesn't have to re-match chapters
+  // to cuts after planning.
+  chapterTitle?: string;
 }
 
 // --- Worker messages ---
@@ -63,6 +78,8 @@ export type WorkerInMessage =
         file: File;
         settings: ProcessingSettings;
         durationSec: number;
+        splitMode: SplitMode;
+        chapters: Chapter[]; // empty when splitMode === "time"
       };
     }
   | {
@@ -105,7 +122,6 @@ export type WorkerOutMessage =
 export interface RuntimeCapabilities {
   crossOriginIsolated: boolean;
   sharedArrayBuffer: boolean;
-  multiThreadAvailable: boolean;
   webGPU: boolean;
   isIOS: boolean;
   isMobile: boolean;

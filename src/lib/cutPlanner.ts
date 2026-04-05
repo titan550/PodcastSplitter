@@ -1,4 +1,4 @@
-import type { CutPoint, SilenceInterval } from "../types";
+import type { Chapter, CutPoint, SilenceInterval } from "../types";
 
 const GRACE_WINDOW_SEC = 20;
 const MIN_TRAILING_SEC = 30;
@@ -49,6 +49,48 @@ export function planCuts(
     }
   }
 
+  return cuts;
+}
+
+/**
+ * Plans cuts directly from parsed MP3/M4B chapters. Guarantees ordered,
+ * gap-free coverage from 0 to totalDurationSec:
+ *
+ *  1. Sorts by start — parsers don't guarantee chronological order.
+ *  2. If the first chapter starts > 1 s in, prepends a synthetic "Intro"
+ *     chapter from 0 so leading ads / cold-open audio isn't silently lost.
+ *  3. Each chapter's endSec is derived from the next chapter's start (the
+ *     last chapter runs to totalDurationSec). Parser-supplied `end` fields
+ *     are intentionally ignored — they can leave gaps or overlap.
+ *  4. Zero-length segments are dropped, so a chapter at the exact file end
+ *     doesn't produce an empty part.
+ *
+ * Returned cuts share the same CutPoint shape as time-based cuts so the
+ * downstream encoding pipeline treats both modes uniformly.
+ */
+export function planCutsFromChapters(
+  chapters: Chapter[],
+  totalDurationSec: number,
+): CutPoint[] {
+  if (chapters.length === 0) return [];
+  const sorted = [...chapters].sort((a, b) => a.start - b.start);
+  if (sorted[0]!.start > 1) {
+    sorted.unshift({ title: "Intro", start: 0 });
+  }
+  const cuts: CutPoint[] = [];
+  for (let i = 0; i < sorted.length; i++) {
+    const startSec = sorted[i]!.start;
+    const endSec =
+      i + 1 < sorted.length ? sorted[i + 1]!.start : totalDurationSec;
+    if (endSec > startSec) {
+      cuts.push({
+        startSec,
+        endSec,
+        partIndex: cuts.length,
+        chapterTitle: sorted[i]!.title,
+      });
+    }
+  }
   return cuts;
 }
 

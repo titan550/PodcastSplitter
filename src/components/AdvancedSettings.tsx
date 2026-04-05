@@ -106,21 +106,6 @@ export function AdvancedSettings({ settings, capabilities, onChange }: Props) {
         </select>
       </label>
 
-      <label className="settings-form__field settings-form__toggle">
-        <input
-          type="checkbox"
-          checked={settings.preferMultiThread}
-          disabled={!capabilities?.multiThreadAvailable}
-          onChange={(e) =>
-            onChange({ preferMultiThread: e.target.checked })
-          }
-        />
-        <span>
-          Multi-thread ffmpeg
-          {!capabilities?.multiThreadAvailable && " (not available)"}
-        </span>
-      </label>
-
       <div className="advanced-settings__downloads">
         <p>First-run downloads:</p>
         <ul>

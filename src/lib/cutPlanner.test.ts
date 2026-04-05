@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { planCuts } from "./cutPlanner";
+import { planCuts, planCutsFromChapters } from "./cutPlanner";
 
 describe("planCuts", () => {
   it("creates uniform cuts when no silences", () => {
@@ -89,5 +89,111 @@ describe("planCuts", () => {
     const silences = [{ start: 370, end: 372 }];
     const cuts = planCuts(800, 300, 1.25, silences);
     expect(cuts[0]!.endSec).toBe(371); // snapped to silence midpoint
+  });
+});
+
+describe("planCutsFromChapters", () => {
+  it("returns empty for empty input", () => {
+    expect(planCutsFromChapters([], 1000)).toEqual([]);
+  });
+
+  it("converts ordered chapters to ordered cuts and carries titles", () => {
+    const cuts = planCutsFromChapters(
+      [
+        { title: "One", start: 0 },
+        { title: "Two", start: 100 },
+        { title: "Three", start: 250 },
+      ],
+      400,
+    );
+    expect(cuts).toEqual([
+      { startSec: 0, endSec: 100, partIndex: 0, chapterTitle: "One" },
+      { startSec: 100, endSec: 250, partIndex: 1, chapterTitle: "Two" },
+      { startSec: 250, endSec: 400, partIndex: 2, chapterTitle: "Three" },
+    ]);
+  });
+
+  it("sorts out-of-order chapters by start", () => {
+    const cuts = planCutsFromChapters(
+      [
+        { title: "Third", start: 200 },
+        { title: "First", start: 0 },
+        { title: "Second", start: 100 },
+      ],
+      300,
+    );
+    expect(cuts.map((c) => c.startSec)).toEqual([0, 100, 200]);
+    expect(cuts[cuts.length - 1]!.endSec).toBe(300);
+  });
+
+  it("prepends synthetic Intro when first chapter starts > 1s in", () => {
+    const cuts = planCutsFromChapters(
+      [
+        { title: "Main", start: 30 },
+        { title: "Outro", start: 900 },
+      ],
+      1000,
+    );
+    expect(cuts).toHaveLength(3);
+    expect(cuts[0]).toEqual({
+      startSec: 0,
+      endSec: 30,
+      partIndex: 0,
+      chapterTitle: "Intro",
+    });
+    expect(cuts[1]!.startSec).toBe(30);
+    expect(cuts[1]!.chapterTitle).toBe("Main");
+  });
+
+  it("does NOT prepend Intro when first chapter starts at 0 or within 1s", () => {
+    const a = planCutsFromChapters([{ title: "A", start: 0 }], 100);
+    expect(a).toHaveLength(1);
+    expect(a[0]!.startSec).toBe(0);
+
+    const b = planCutsFromChapters([{ title: "B", start: 0.5 }], 100);
+    expect(b).toHaveLength(1);
+    expect(b[0]!.startSec).toBe(0.5);
+  });
+
+  it("closes gaps by using next chapter's start as current's end", () => {
+    // Even if parser reported gaps, planCutsFromChapters derives end
+    // from the next chapter's start, so every second is covered.
+    const cuts = planCutsFromChapters(
+      [
+        { title: "A", start: 0 },
+        { title: "B", start: 50 },
+      ],
+      100,
+    );
+    expect(cuts[0]!.endSec).toBe(50); // no gap
+    expect(cuts[1]!.endSec).toBe(100);
+  });
+
+  it("drops zero-length trailing chapter at exact file end", () => {
+    const cuts = planCutsFromChapters(
+      [
+        { title: "A", start: 0 },
+        { title: "B", start: 100 }, // total is also 100 — zero length
+      ],
+      100,
+    );
+    expect(cuts).toHaveLength(1);
+    expect(cuts[0]).toEqual({
+      startSec: 0,
+      endSec: 100,
+      partIndex: 0,
+      chapterTitle: "A",
+    });
+  });
+
+  it("assigns contiguous partIndex after sort + intro prepend", () => {
+    const cuts = planCutsFromChapters(
+      [
+        { title: "Later", start: 60 },
+        { title: "Earlier", start: 20 },
+      ],
+      120,
+    );
+    expect(cuts.map((c) => c.partIndex)).toEqual([0, 1, 2]);
   });
 });

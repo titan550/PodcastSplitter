@@ -1,5 +1,6 @@
 import type { TTSEngine } from "./TTSEngine";
 import { getCachedBlob, setCachedBlob, blobCacheKey } from "../cache/blobCache";
+import { assetUrl } from "../assetUrl";
 
 const ENGINE_VERSION = "piper-1.0.4";
 
@@ -17,7 +18,10 @@ export class PiperEngine implements TTSEngine {
     // with navigator.hardwareConcurrency, which causes threaded WASM mode to
     // fail. Intercept assignments silently so it always reads as 1.
     const ort = await import("onnxruntime-web");
-    ort.env.wasm.wasmPaths = "/ort/";
+    // Routed through assetUrl so it still resolves under /<repo>/ on
+    // GitHub Pages project deploys (COEP blocks cross-origin WASM, so
+    // ORT must load from same-origin under the app's base path).
+    ort.env.wasm.wasmPaths = assetUrl("/ort/");
     Object.defineProperty(ort.env.wasm, "numThreads", {
       get: () => 1,
       set: () => {
@@ -37,9 +41,9 @@ export class PiperEngine implements TTSEngine {
         }
       },
       wasmPaths: {
-        onnxWasm: "/ort/",
-        piperData: "/piper/piper_phonemize.data",
-        piperWasm: "/piper/piper_phonemize.wasm",
+        onnxWasm: assetUrl("/ort/"),
+        piperData: assetUrl("/piper/piper_phonemize.data"),
+        piperWasm: assetUrl("/piper/piper_phonemize.wasm"),
       },
     });
 

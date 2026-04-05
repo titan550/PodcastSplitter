@@ -1,4 +1,9 @@
-import type { ProcessingSettings, RuntimeCapabilities } from "../types";
+import type {
+  Chapter,
+  ProcessingSettings,
+  RuntimeCapabilities,
+  SplitMode,
+} from "../types";
 import { AdvancedSettings } from "./AdvancedSettings";
 
 interface Props {
@@ -6,7 +11,10 @@ interface Props {
   durationSec: number;
   fileSizeMB: number;
   capabilities: RuntimeCapabilities | null;
+  chapters: Chapter[];
+  splitMode: SplitMode;
   onChange: (partial: Partial<ProcessingSettings>) => void;
+  onSplitModeChange: (mode: SplitMode) => void;
   onStart: () => void;
 }
 
@@ -21,18 +29,18 @@ export function SettingsForm({
   durationSec,
   fileSizeMB,
   capabilities,
+  chapters,
+  splitMode,
   onChange,
+  onSplitModeChange,
   onStart,
 }: Props) {
-  const estimatedParts = Math.max(
-    1,
-    Math.ceil(
-      durationSec /
-        settings.playbackSpeed /
-        settings.targetPartDurationSec *
-        settings.playbackSpeed,
-    ),
-  );
+  const hasChapters = chapters.length >= 2;
+  const useChapterMode = hasChapters && splitMode === "chapters";
+
+  const estimatedParts = useChapterMode
+    ? chapters.length
+    : Math.max(1, Math.ceil(durationSec / settings.targetPartDurationSec));
 
   return (
     <div className="settings-form">
@@ -51,19 +59,67 @@ export function SettingsForm({
         />
       </label>
 
-      <label className="settings-form__field">
-        <span>Minutes per part: {settings.targetPartDurationSec / 60}</span>
-        <input
-          type="range"
-          min={2}
-          max={15}
-          step={1}
-          value={settings.targetPartDurationSec / 60}
-          onChange={(e) =>
-            onChange({ targetPartDurationSec: Number(e.target.value) * 60 })
-          }
-        />
-      </label>
+      {hasChapters && (
+        <div className="settings-form__field">
+          <span>Split by</span>
+          <div className="split-mode-toggle">
+            <button
+              type="button"
+              className={`split-mode-toggle__btn ${
+                splitMode === "chapters" ? "split-mode-toggle__btn--active" : ""
+              }`}
+              onClick={() => onSplitModeChange("chapters")}
+            >
+              Chapters ({chapters.length})
+            </button>
+            <button
+              type="button"
+              className={`split-mode-toggle__btn ${
+                splitMode === "time" ? "split-mode-toggle__btn--active" : ""
+              }`}
+              onClick={() => onSplitModeChange("time")}
+            >
+              Time
+            </button>
+          </div>
+          {useChapterMode && (
+            <details className="chapter-list" open>
+              <summary>Chapters</summary>
+              <ul className="chapter-list__items">
+                {chapters.map((c, i) => (
+                  <li key={`${i}-${c.start}`}>
+                    <span className="chapter-list__num">
+                      {String(i + 1).padStart(2, "0")}
+                    </span>
+                    <span className="chapter-list__title">
+                      {c.title || `Chapter ${i + 1}`}
+                    </span>
+                    <span className="chapter-list__time">
+                      {formatDuration(c.start)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+        </div>
+      )}
+
+      {!useChapterMode && (
+        <label className="settings-form__field">
+          <span>Minutes per part: {settings.targetPartDurationSec / 60}</span>
+          <input
+            type="range"
+            min={2}
+            max={15}
+            step={1}
+            value={settings.targetPartDurationSec / 60}
+            onChange={(e) =>
+              onChange({ targetPartDurationSec: Number(e.target.value) * 60 })
+            }
+          />
+        </label>
+      )}
 
       <label className="settings-form__field">
         <span>Playback speed: {settings.playbackSpeed.toFixed(2)}x</span>
@@ -85,8 +141,35 @@ export function SettingsForm({
           checked={settings.spokenPrefix}
           onChange={(e) => onChange({ spokenPrefix: e.target.checked })}
         />
-        <span>Spoken prefix ("Part N of Title")</span>
+        <span>Spoken prefix before each part</span>
       </label>
+
+      <label className="settings-form__field settings-form__toggle">
+        <input
+          type="checkbox"
+          checked={settings.skipLongSilences}
+          onChange={(e) => onChange({ skipLongSilences: e.target.checked })}
+        />
+        <span>Skip long silences</span>
+      </label>
+
+      {settings.skipLongSilences && (
+        <label className="settings-form__field">
+          <span>
+            Cut silences longer than: {settings.skipLongSilenceMinSec.toFixed(1)}s
+          </span>
+          <input
+            type="range"
+            min={1}
+            max={10}
+            step={0.5}
+            value={settings.skipLongSilenceMinSec}
+            onChange={(e) =>
+              onChange({ skipLongSilenceMinSec: Number(e.target.value) })
+            }
+          />
+        </label>
+      )}
 
       <AdvancedSettings
         settings={settings}

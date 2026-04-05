@@ -1,4 +1,9 @@
 import { useCallback, useRef, useState, type DragEvent } from "react";
+import {
+  ACCEPT_ATTR,
+  SUPPORTED_AUDIO_EXTS,
+  isSupportedAudioFile,
+} from "../lib/supportedFormats";
 
 interface Props {
   isMobile: boolean;
@@ -11,8 +16,10 @@ export function FilePicker({ isMobile, onFileSelected }: Props) {
 
   const handleFile = useCallback(
     (file: File) => {
-      if (!file.name.toLowerCase().endsWith(".mp3")) {
-        alert("Please select an MP3 file.");
+      if (!isSupportedAudioFile(file.name)) {
+        alert(
+          `Unsupported format. Please select one of: ${SUPPORTED_AUDIO_EXTS.join(", ")}`,
+        );
         return;
       }
       if (isMobile && file.size > 200 * 1024 * 1024) {
@@ -59,14 +66,34 @@ export function FilePicker({ isMobile, onFileSelected }: Props) {
       <input
         ref={inputRef}
         type="file"
-        accept=".mp3,audio/mpeg"
+        accept={ACCEPT_ATTR}
         onChange={handleInput}
         hidden
       />
+      <svg
+        className="file-picker__icon"
+        xmlns="http://www.w3.org/2000/svg"
+        viewBox="0 0 24 24"
+        width="56"
+        height="56"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+      >
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+        <polyline points="17 8 12 3 7 8" />
+        <line x1="12" y1="3" x2="12" y2="15" />
+      </svg>
       <p className="file-picker__label">
         {dragging
-          ? "Drop MP3 here"
-          : "Drop an MP3 file here, or click to browse"}
+          ? "Drop audio file here"
+          : "Drop an audio file here, or click to browse"}
+      </p>
+      <p className="file-picker__hint">
+        MP3, M4A, M4B, AAC, WAV, OGG, Opus, FLAC, or WebM. Output is always MP3.
       </p>
     </div>
   );

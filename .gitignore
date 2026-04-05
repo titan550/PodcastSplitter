@@ -20,6 +20,17 @@ public/ffmpeg/mt/
 public/ort/
 public/piper/
 
+# Local test audio — too big for git, user-provided
+*.mp3
+*.m4a
+*.m4b
+*.wav
+*.flac
+*.ogg
+*.opus
+*.aac
+*.webm
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
@@ -33,3 +44,4 @@ public/piper/
 
 # AI Agents
 .claude/
+.mcp.json

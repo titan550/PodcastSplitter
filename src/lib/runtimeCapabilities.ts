@@ -4,7 +4,6 @@ export function detectCapabilities(): RuntimeCapabilities {
   const crossOriginIsolated =
     typeof self !== "undefined" && self.crossOriginIsolated === true;
   const sharedArrayBuffer = typeof SharedArrayBuffer !== "undefined";
-  const multiThreadAvailable = crossOriginIsolated && sharedArrayBuffer;
 
   let webGPU = false;
   try {
@@ -31,7 +30,6 @@ export function detectCapabilities(): RuntimeCapabilities {
   return {
     crossOriginIsolated,
     sharedArrayBuffer,
-    multiThreadAvailable,
     webGPU,
     isIOS,
     isMobile,

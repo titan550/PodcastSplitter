@@ -1,9 +1,11 @@
 import { useReducer } from "react";
 import type {
+  Chapter,
   ProcessingSettings,
   ProgressPayload,
   ErrorPayload,
   RuntimeCapabilities,
+  SplitMode,
 } from "../types";
 import { DEFAULT_SETTINGS } from "../types";
 import { loadSettings } from "../lib/jobStore";
@@ -24,11 +26,23 @@ export interface JobState {
   zipBlob: Blob | null;
   error: ErrorPayload | null;
   capabilities: RuntimeCapabilities | null;
+  // splitMode + chapters are per-file state, NOT settings. They live on
+  // JobState (not inside settings) specifically to keep them out of the
+  // wholesale localStorage serialization in jobStore.saveSettings.
+  splitMode: SplitMode;
+  chapters: Chapter[];
 }
 
 export type JobAction =
-  | { type: "FILE_SELECTED"; file: File; title: string; durationSec: number }
+  | {
+      type: "FILE_SELECTED";
+      file: File;
+      title: string;
+      durationSec: number;
+      chapters: Chapter[];
+    }
   | { type: "SETTINGS_CHANGED"; settings: Partial<ProcessingSettings> }
+  | { type: "SPLIT_MODE_CHANGED"; splitMode: SplitMode }
   | { type: "START" }
   | { type: "PROGRESS"; payload: ProgressPayload }
   | { type: "COMPLETE"; zipBlob: Blob }
@@ -45,6 +59,8 @@ const initialState: JobState = {
   zipBlob: null,
   error: null,
   capabilities: null,
+  splitMode: "time",
+  chapters: [],
 };
 
 function reducer(state: JobState, action: JobAction): JobState {
@@ -58,6 +74,8 @@ function reducer(state: JobState, action: JobAction): JobState {
           ...state.settings,
           podcastTitle: action.title,
         },
+        chapters: action.chapters,
+        splitMode: action.chapters.length >= 2 ? "chapters" : "time",
         error: null,
         zipUrl: null,
       };
@@ -66,6 +84,12 @@ function reducer(state: JobState, action: JobAction): JobState {
       return {
         ...state,
         settings: { ...state.settings, ...action.settings },
+      };
+
+    case "SPLIT_MODE_CHANGED":
+      return {
+        ...state,
+        splitMode: action.splitMode,
       };
 
     case "START":
@@ -104,7 +128,12 @@ function reducer(state: JobState, action: JobAction): JobState {
 
     case "RESET":
       if (state.zipUrl) URL.revokeObjectURL(state.zipUrl);
-      return { ...initialState, capabilities: state.capabilities, zipBlob: null };
+      return {
+        ...initialState,
+        capabilities: state.capabilities,
+        settings: state.settings, // preserve user's saved settings
+        zipBlob: null,
+      };
 
     case "CAPABILITIES":
       return {

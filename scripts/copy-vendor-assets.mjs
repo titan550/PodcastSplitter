@@ -10,19 +10,6 @@ for (const f of ["ffmpeg-core.js", "ffmpeg-core.wasm"]) {
 }
 console.log("Copied ffmpeg single-thread core to public/ffmpeg/");
 
-// ffmpeg multi-thread core (optional)
-try {
-  const mtSrc = "node_modules/@ffmpeg/core-mt/dist/umd";
-  const mtDir = "public/ffmpeg/mt";
-  mkdirSync(mtDir, { recursive: true });
-  for (const f of ["ffmpeg-core.js", "ffmpeg-core.wasm", "ffmpeg-core.worker.js"]) {
-    cpSync(join(mtSrc, f), join(mtDir, f));
-  }
-  console.log("Copied ffmpeg multi-thread core to public/ffmpeg/mt/");
-} catch {
-  console.log("@ffmpeg/core-mt not installed, skipping multi-thread assets");
-}
-
 // ONNX Runtime WASM files (must be self-hosted for COEP compliance)
 const ortDir = "public/ort";
 mkdirSync(ortDir, { recursive: true });

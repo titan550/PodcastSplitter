@@ -4,6 +4,8 @@ import { FilePicker } from "../components/FilePicker";
 import { SettingsForm } from "../components/SettingsForm";
 import { ProgressPanel } from "../components/ProgressPanel";
 import { ErrorBanner } from "../components/ErrorBanner";
+import { Footer } from "../components/Footer";
+import { Logo } from "../components/Logo";
 import { extractMetadata } from "../lib/metadata";
 import { zipFilename } from "../lib/filename";
 import { saveSettings } from "../lib/jobStore";
@@ -64,11 +66,34 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // TTS request queue — worker fires all requests upfront, main thread
-  // processes them serially (single TTS session) while worker encodes in
-  // parallel. This pipelines TTS synthesis with ffmpeg encoding.
-  const ttsQueueRef = useRef<Array<{ id: number; text: string }>>([]);
+  const requestWakeLock = useCallback(async () => {
+    try {
+      if ("wakeLock" in navigator) {
+        wakeLockRef.current = await navigator.wakeLock.request("screen");
+      }
+    } catch {
+      // not supported or denied
+    }
+  }, []);
+
+  const releaseWakeLock = useCallback(() => {
+    wakeLockRef.current?.release();
+    wakeLockRef.current = null;
+  }, []);
+
+  // TTS request queue. Worker fires all requests upfront; main thread
+  // processes them serially while the worker encodes in parallel.
+  //
+  // Each entry tags its target worker: after cancel/recreate, in-flight
+  // synthesis still completes but the blob is only posted if workerRef
+  // still points at that worker, otherwise it would bind to a stale id
+  // on the replacement worker (which also starts ids at 0).
+  const ttsQueueRef = useRef<
+    Array<{ id: number; text: string; targetWorker: Worker }>
+  >([]);
   const ttsProcessingRef = useRef(false);
+
+  const terminateAndRecreateWorkerRef = useRef<() => void>(() => {});
 
   const processTTSQueue = useCallback(async () => {
     if (ttsProcessingRef.current) return;
@@ -77,12 +102,17 @@ export function App() {
       await ttsInitPromiseRef.current;
       if (!ttsEngineRef.current) throw new Error("TTS not initialized");
       while (ttsQueueRef.current.length > 0) {
-        const { id, text } = ttsQueueRef.current.shift()!;
+        const { id, text, targetWorker } = ttsQueueRef.current.shift()!;
         const wavBlob = await ttsEngineRef.current.synthesizeToWav(text);
-        workerRef.current?.postMessage({
-          type: "TTS_RESULT",
-          payload: { id, wavBlob },
-        });
+        // Only post the result if the worker it was queued for is still
+        // the current one. Otherwise the job was cancelled / the worker
+        // was recreated, and this blob would bind to an unrelated id.
+        if (workerRef.current === targetWorker) {
+          targetWorker.postMessage({
+            type: "TTS_RESULT",
+            payload: { id, wavBlob },
+          });
+        }
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -90,15 +120,21 @@ export function App() {
         type: "ERROR",
         payload: { message, phase: "tts", recoverable: false },
       });
-      ttsQueueRef.current.length = 0;
+      // The worker still has unresolved requestTTS promises awaiting
+      // results that will never arrive. Recreate it so the next job
+      // starts from a clean slate.
+      terminateAndRecreateWorkerRef.current();
+      releaseWakeLock();
     } finally {
       ttsProcessingRef.current = false;
     }
-  }, []);
+  }, [releaseWakeLock]);
 
   const handleTTSRequest = useCallback(
     (id: number, text: string) => {
-      ttsQueueRef.current.push({ id, text });
+      const targetWorker = workerRef.current;
+      if (!targetWorker) return;
+      ttsQueueRef.current.push({ id, text, targetWorker });
       processTTSQueue();
     },
     [processTTSQueue],
@@ -121,6 +157,9 @@ export function App() {
         case "ERROR":
           dispatch({ type: "ERROR", payload: e.data.payload });
           releaseWakeLock();
+          // Worker left in a stale state (e.g. unresolved requestTTS
+          // promises). Recreate it so the next job starts clean.
+          terminateAndRecreateWorkerRef.current();
           break;
         case "CAPABILITIES":
           dispatch({ type: "CAPABILITIES", payload: e.data.payload });
@@ -140,10 +179,37 @@ export function App() {
           recoverable: false,
         },
       });
+      releaseWakeLock();
+      terminateAndRecreateWorkerRef.current();
     };
     workerRef.current = worker;
     return worker;
-  }, [handleTTSRequest]);
+  }, [handleTTSRequest, releaseWakeLock]);
+
+  // Terminates the live worker, drops any TTS queue entries that target
+  // it, and spins up a fresh worker.
+  const terminateAndRecreateWorker = useCallback(() => {
+    const oldWorker = workerRef.current;
+    workerRef.current = null;
+    try {
+      oldWorker?.terminate();
+    } catch {
+      // terminate can throw if the worker already crashed; ignore
+    }
+    if (oldWorker) {
+      ttsQueueRef.current = ttsQueueRef.current.filter(
+        (e) => e.targetWorker !== oldWorker,
+      );
+    }
+    createWorker();
+  }, [createWorker]);
+
+  // Keep the ref pointed at the latest helper so processTTSQueue and the
+  // worker message handlers (both created before this helper in source
+  // order) can call it through the ref without ordering gymnastics.
+  useEffect(() => {
+    terminateAndRecreateWorkerRef.current = terminateAndRecreateWorker;
+  }, [terminateAndRecreateWorker]);
 
   useEffect(() => {
     createWorker();
@@ -152,21 +218,6 @@ export function App() {
       workerRef.current = null;
     };
   }, [createWorker]);
-
-  const requestWakeLock = useCallback(async () => {
-    try {
-      if ("wakeLock" in navigator) {
-        wakeLockRef.current = await navigator.wakeLock.request("screen");
-      }
-    } catch {
-      // not supported or denied
-    }
-  }, []);
-
-  const releaseWakeLock = useCallback(() => {
-    wakeLockRef.current?.release();
-    wakeLockRef.current = null;
-  }, []);
 
   const handleFileSelected = useCallback(
     async (file: File) => {
@@ -178,6 +229,7 @@ export function App() {
           file,
           title: meta.title,
           durationSec: meta.durationSec,
+          chapters: meta.chapters,
         });
         // If user has an explicit parallelEncoding that's unsafe for this
         // file, downgrade to the safe max. Auto mode (0) is resolved at
@@ -195,7 +247,8 @@ export function App() {
         dispatch({
           type: "ERROR",
           payload: {
-            message: "Could not read MP3 metadata. Is this a valid MP3 file?",
+            message:
+              "Could not read audio metadata. Please check that the file is a valid audio file.",
             phase: "loading",
             recoverable: true,
           },
@@ -239,17 +292,25 @@ export function App() {
         file: state.file,
         settings: resolvedSettings,
         durationSec: durationRef.current,
+        splitMode: state.splitMode,
+        chapters: state.splitMode === "chapters" ? state.chapters : [],
       },
     });
-  }, [state.file, state.settings, requestWakeLock, releaseWakeLock, initTTS]);
+  }, [
+    state.file,
+    state.settings,
+    state.splitMode,
+    state.chapters,
+    requestWakeLock,
+    releaseWakeLock,
+    initTTS,
+  ]);
 
   const handleCancel = useCallback(() => {
-    workerRef.current?.terminate();
-    workerRef.current = null;
+    terminateAndRecreateWorker();
     releaseWakeLock();
     dispatch({ type: "RESET" });
-    createWorker();
-  }, [createWorker, releaseWakeLock]);
+  }, [terminateAndRecreateWorker, releaseWakeLock]);
 
   const handleDownload = useCallback(() => {
     if (!state.zipBlob) return;
@@ -269,14 +330,38 @@ export function App() {
     }, 5000);
   }, [state.zipBlob, state.settings.podcastTitle]);
 
+  // Auto-download on completion. Best-effort: Chrome/Firefox usually
+  // honor the programmatic click, but Safari and mobile browsers may
+  // block it after a long-running job. Manual Download button is the
+  // primary fallback path.
+  //
+  // Ref guard is keyed on the blob identity so a blob-reference update
+  // (e.g. re-running a new job with a different blob) re-arms auto-
+  // download, while post-complete state changes (title edits, etc.)
+  // that keep the same blob can never double-fire the download.
+  const autoDownloadedForRef = useRef<Blob | null>(null);
+  useEffect(() => {
+    if (
+      state.status === "complete" &&
+      state.zipBlob &&
+      autoDownloadedForRef.current !== state.zipBlob
+    ) {
+      autoDownloadedForRef.current = state.zipBlob;
+      handleDownload();
+    }
+  }, [state.status, state.zipBlob, handleDownload]);
+
   const isMobile = state.capabilities?.isMobile ?? false;
 
   return (
     <div className="app">
       <header className="app__header">
-        <h1>Podcast Splitter</h1>
+        <div className="app__brand">
+          <Logo size={36} className="app__logo" />
+          <h1>Podcast Splitter</h1>
+        </div>
         <p className="app__subtitle">
-          Split podcasts into labeled parts for swimming headphones
+          Split podcasts into labeled parts for sports headphones
         </p>
       </header>
 
@@ -295,7 +380,7 @@ export function App() {
               onFileSelected={handleFileSelected}
             />
             <div className="app__privacy">
-              <p>All podcast audio stays in your browser.</p>
+              <p>All audio stays in your browser.</p>
               <p>Spoken prefix generation also runs locally.</p>
             </div>
           </>
@@ -307,8 +392,13 @@ export function App() {
             durationSec={durationRef.current}
             fileSizeMB={state.file ? state.file.size / 1024 / 1024 : 0}
             capabilities={state.capabilities}
+            chapters={state.chapters}
+            splitMode={state.splitMode}
             onChange={(s) =>
               dispatch({ type: "SETTINGS_CHANGED", settings: s })
+            }
+            onSplitModeChange={(mode) =>
+              dispatch({ type: "SPLIT_MODE_CHANGED", splitMode: mode })
             }
             onStart={handleStart}
           />
@@ -324,6 +414,9 @@ export function App() {
         {state.status === "complete" && (
           <div className="complete-panel">
             <h2>Done!</h2>
+            <p className="complete-panel__hint">
+              Your ZIP should be downloading. If it didn&apos;t start, click below.
+            </p>
             <button className="btn btn--primary" onClick={handleDownload}>
               Download ZIP
             </button>
@@ -336,6 +429,8 @@ export function App() {
           </div>
         )}
       </main>
+
+      <Footer />
     </div>
   );
 }
