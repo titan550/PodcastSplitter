@@ -45,3 +45,6 @@ public/piper/
 # AI Agents
 .claude/
 .mcp.json
+
+# Scratch / planning notes
+todo.md

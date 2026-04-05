@@ -1,6 +1,6 @@
 import type { ProcessingSettings } from "../types";
 
-const SETTINGS_KEY = "podcaster_settings";
+const SETTINGS_KEY = "podcast_splitter_settings";
 
 export function loadSettings(): Partial<ProcessingSettings> {
   try {

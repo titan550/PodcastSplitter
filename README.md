@@ -56,3 +56,7 @@ First load pulls ~50 MB total (ffmpeg ~25, ORT ~8, voice ~17); everything is cac
 ## Stack
 
 Vite · React · TypeScript · @ffmpeg/ffmpeg · @mintplex-labs/piper-tts-web · onnxruntime-web · @zip.js/zip.js · music-metadata · idb-keyval · vanilla CSS
+
+## License
+
+MIT — see [LICENSE](./LICENSE).

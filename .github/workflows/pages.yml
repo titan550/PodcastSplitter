@@ -30,7 +30,7 @@ jobs:
       - name: Build with subpath base
         run: npm run build
         env:
-          # Drives vite.config.ts → `base: "/podcaster-b/"`. All runtime
+          # Drives vite.config.ts → `base: "/PodcastSplitter/"`. All runtime
           # asset paths (ffmpeg, ort, piper, coi-sw.js) resolve under
           # this prefix via the assetUrl helper and %BASE_URL% HTML
           # substitution.

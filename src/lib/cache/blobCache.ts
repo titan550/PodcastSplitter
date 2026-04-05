@@ -1,6 +1,6 @@
 import { get, set, clear, createStore } from "idb-keyval";
 
-const store = createStore("podcaster-blob-cache", "blobs");
+const store = createStore("podcast-splitter-blob-cache", "blobs");
 
 export function blobCacheKey(
   text: string,
