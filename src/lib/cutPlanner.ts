@@ -58,6 +58,16 @@ export function planCuts(
 // planCuts would have merged the tail back in anyway.
 const CHAPTER_TOLERANCE = 1.1;
 
+/** Sort chapters chronologically and prepend a synthetic "Intro" if the
+ *  first chapter starts > 1 s in, so leading audio isn't silently lost. */
+function normalizeChapters(chapters: Chapter[]): Chapter[] {
+  const sorted = [...chapters].sort((a, b) => a.start - b.start);
+  if (sorted[0]!.start > 1) {
+    sorted.unshift({ title: "Intro", start: 0 });
+  }
+  return sorted;
+}
+
 /**
  * Cheap O(chapters) predicate that mirrors the subdivision test inside
  * `planCutsFromChapters` without running the planner. Used by the worker
@@ -71,10 +81,7 @@ export function anyChapterWillSubdivide(
   playbackSpeed: number,
 ): boolean {
   if (chapters.length === 0) return false;
-  const sorted = [...chapters].sort((a, b) => a.start - b.start);
-  if (sorted[0]!.start > 1) {
-    sorted.unshift({ title: "Intro", start: 0 });
-  }
+  const sorted = normalizeChapters(chapters);
   const ceiling = targetPartSec * CHAPTER_TOLERANCE;
   for (let i = 0; i < sorted.length; i++) {
     const startSec = sorted[i]!.start;
@@ -117,10 +124,7 @@ export function planCutsFromChapters(
   silences: SilenceInterval[],
 ): CutPoint[] {
   if (chapters.length === 0) return [];
-  const sorted = [...chapters].sort((a, b) => a.start - b.start);
-  if (sorted[0]!.start > 1) {
-    sorted.unshift({ title: "Intro", start: 0 });
-  }
+  const sorted = normalizeChapters(chapters);
 
   // Build [start, end] windows first so totalChapters can exclude any
   // zero-length segments dropped below (a trailing chapter at exact file

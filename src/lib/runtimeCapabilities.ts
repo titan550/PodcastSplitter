@@ -8,9 +8,7 @@ export function detectCapabilities(): RuntimeCapabilities {
   let webGPU = false;
   try {
     webGPU = "gpu" in navigator;
-  } catch {
-    // not available
-  }
+  } catch { /* unsupported */ }
 
   const ua =
     typeof navigator !== "undefined" ? navigator.userAgent || "" : "";
@@ -23,9 +21,7 @@ export function detectCapabilities(): RuntimeCapabilities {
   let opfsAvailable = false;
   try {
     opfsAvailable = typeof navigator?.storage?.getDirectory === "function";
-  } catch {
-    // not available
-  }
+  } catch { /* unsupported */ }
 
   return {
     crossOriginIsolated,
@@ -46,11 +42,7 @@ export function detectCapabilities(): RuntimeCapabilities {
  *   - iOS / mobile → 1 (WebKit memory limits are strict)
  *   - Device memory < 4GB → 1
  *   - Source file > 150MB → 1 (N copies would exceed safe limit)
- *   - Source file > 75MB → 2
  *   - Otherwise → 2
- *
- * Max is capped at 4 even on high-memory devices because ffmpeg core
- * WASM startup cost dominates for small podcasts.
  */
 export function pickParallelEncoding(
   fileSizeBytes: number,

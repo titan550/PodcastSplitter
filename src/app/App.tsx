@@ -228,7 +228,6 @@ export function App() {
           type: "FILE_SELECTED",
           file,
           title: meta.title,
-          durationSec: meta.durationSec,
           chapters: meta.chapters,
           sourceMetadata: toSourceMetadata(meta),
         });

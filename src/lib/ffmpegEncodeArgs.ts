@@ -61,11 +61,7 @@ function buildSilenceRemoveStep(skip: SkipSilenceOptions | undefined): string {
   return `,silenceremove=stop_periods=-1:stop_duration=${skip.minDurationSec.toFixed(2)}:stop_threshold=${skip.thresholdDb}dB`;
 }
 
-/**
- * Build the full ffmpeg arg array for encoding one part. Handles
- * with/without prefix, with/without cover art, source/voice audio
- * profile, silence removal, and tag injection.
- */
+/** Build the full ffmpeg arg array for encoding one part. */
 export function buildEncodeArgs(input: EncodeArgsInput): string[] {
   const {
     inputFile,

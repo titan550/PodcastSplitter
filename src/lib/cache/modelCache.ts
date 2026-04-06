@@ -1,31 +1,23 @@
 import { clearBlobCache } from "./blobCache";
 
 export interface CacheInfo {
-  blobCacheCleared: boolean;
+  blobCache: "cleared" | "failed";
 }
 
 export async function clearAllCaches(): Promise<CacheInfo> {
-  let blobCacheCleared = false;
   try {
     await clearBlobCache();
-    blobCacheCleared = true;
+    return { blobCache: "cleared" };
   } catch {
-    // ignore
+    return { blobCache: "failed" };
   }
-
-  // OPFS cleanup for piper-tts-web is not exposed via its API.
-  // Users can clear site data via browser settings if needed.
-
-  return { blobCacheCleared };
 }
 
-export function estimateFirstRunDownloads(): {
+export const FIRST_RUN_DOWNLOADS: readonly {
   label: string;
   sizeMB: number;
-}[] {
-  return [
-    { label: "FFmpeg WASM", sizeMB: 25 },
-    { label: "ONNX Runtime WASM", sizeMB: 8 },
-    { label: "Piper voice model", sizeMB: 17 },
-  ];
-}
+}[] = [
+  { label: "FFmpeg WASM", sizeMB: 25 },
+  { label: "ONNX Runtime WASM", sizeMB: 8 },
+  { label: "Piper voice model", sizeMB: 17 },
+];

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { ProcessingSettings, RuntimeCapabilities } from "../types";
-import { clearAllCaches, estimateFirstRunDownloads } from "../lib/cache/modelCache";
+import { clearAllCaches, FIRST_RUN_DOWNLOADS } from "../lib/cache/modelCache";
 
 interface Props {
   settings: ProcessingSettings;
@@ -15,10 +15,8 @@ export function AdvancedSettings({ settings, capabilities, onChange }: Props) {
   const handleClearCache = async () => {
     setClearing(true);
     try {
-      await clearAllCaches();
-      alert("Caches cleared.");
-    } catch {
-      alert("Failed to clear caches.");
+      const result = await clearAllCaches();
+      alert(result.blobCache === "cleared" ? "Caches cleared." : "Failed to clear caches.");
     } finally {
       setClearing(false);
     }
@@ -35,8 +33,6 @@ export function AdvancedSettings({ settings, capabilities, onChange }: Props) {
       </button>
     );
   }
-
-  const downloads = estimateFirstRunDownloads();
 
   return (
     <details open className="advanced-settings">
@@ -144,7 +140,7 @@ export function AdvancedSettings({ settings, capabilities, onChange }: Props) {
       <div className="advanced-settings__downloads">
         <p>First-run downloads:</p>
         <ul>
-          {downloads.map((d) => (
+          {FIRST_RUN_DOWNLOADS.map((d) => (
             <li key={d.label}>
               {d.label}: ~{d.sizeMB} MB
             </li>

@@ -62,8 +62,4 @@ export class PiperEngine implements TTSEngine {
     await setCachedBlob(key, wavBlob);
     return wavBlob;
   }
-
-  async warmup(): Promise<void> {
-    // init() already warms up with a test prediction
-  }
 }

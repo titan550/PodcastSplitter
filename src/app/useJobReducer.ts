@@ -23,7 +23,6 @@ export interface JobState {
   file: File | null;
   settings: ProcessingSettings;
   progress: ProgressPayload | null;
-  zipUrl: string | null;
   zipBlob: Blob | null;
   error: ErrorPayload | null;
   capabilities: RuntimeCapabilities | null;
@@ -40,7 +39,6 @@ export type JobAction =
       type: "FILE_SELECTED";
       file: File;
       title: string;
-      durationSec: number;
       chapters: Chapter[];
       sourceMetadata: SourceMetadata;
     }
@@ -58,7 +56,6 @@ const initialState: JobState = {
   file: null,
   settings: DEFAULT_SETTINGS,
   progress: null,
-  zipUrl: null,
   zipBlob: null,
   error: null,
   capabilities: null,
@@ -82,7 +79,6 @@ function reducer(state: JobState, action: JobAction): JobState {
         splitMode: action.chapters.length >= 2 ? "chapters" : "time",
         sourceMetadata: action.sourceMetadata,
         error: null,
-        zipUrl: null,
       };
 
     case "SETTINGS_CHANGED":
@@ -103,7 +99,6 @@ function reducer(state: JobState, action: JobAction): JobState {
         status: "processing",
         progress: null,
         error: null,
-        zipUrl: null,
       };
 
     case "PROGRESS":
@@ -112,16 +107,13 @@ function reducer(state: JobState, action: JobAction): JobState {
         progress: action.payload,
       };
 
-    case "COMPLETE": {
-      if (state.zipUrl) URL.revokeObjectURL(state.zipUrl);
+    case "COMPLETE":
       return {
         ...state,
         status: "complete",
         progress: null,
-        zipUrl: URL.createObjectURL(action.zipBlob),
         zipBlob: action.zipBlob,
       };
-    }
 
     case "ERROR":
       return {
@@ -132,7 +124,6 @@ function reducer(state: JobState, action: JobAction): JobState {
       };
 
     case "RESET":
-      if (state.zipUrl) URL.revokeObjectURL(state.zipUrl);
       return {
         ...initialState,
         capabilities: state.capabilities,

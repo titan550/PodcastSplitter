@@ -1,7 +1,7 @@
 import { useRef } from "react";
 
 const GITHUB_URL = "https://github.com/titan550/PodcastSplitter";
-const COFFEE_URL = "https://buymeacoffee.com/tinkerlake";
+const COFFEE_URL = "https://buymeacoffee.com/shojaei";
 
 export function Footer() {
   const dialogRef = useRef<HTMLDialogElement>(null);

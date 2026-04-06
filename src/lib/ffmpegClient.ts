@@ -1,6 +1,7 @@
 import { FFmpeg } from "@ffmpeg/ffmpeg";
 import { toBlobURL } from "@ffmpeg/util";
 import { assetUrl } from "./assetUrl";
+import { buildEncodeArgs, type EncodeArgsInput } from "./ffmpegEncodeArgs";
 
 // Pool of ffmpeg instances for parallel encoding. Each instance has
 // independent WASM memory and virtual filesystem, so parallelism is real
@@ -73,12 +74,8 @@ export function terminateFFmpeg(): void {
   }
 }
 
-import { buildEncodeArgs, type EncodeArgsInput } from "./ffmpegEncodeArgs";
-
 /**
- * Encode one part. Handles both with-prefix and no-prefix paths — the
- * distinction is encoded in `opts.prefixFile`. All arg construction is
- * delegated to the pure `buildEncodeArgs` function.
+ * Encode one part. All arg construction is delegated to `buildEncodeArgs`.
  */
 export async function encodePart(
   ff: FFmpeg,

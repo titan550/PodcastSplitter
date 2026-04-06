@@ -3,12 +3,7 @@ interface Props {
   className?: string;
 }
 
-/**
- * App logo — a stylized waveform with a dashed split bar through the
- * middle, representing the core action of slicing audio into parts.
- * Uses currentColor so it can be re-tinted by CSS in different contexts
- * (header, future dark/light mode variants).
- */
+/** Uses currentColor so CSS can re-tint in different contexts. */
 export function Logo({ size = 32, className }: Props) {
   return (
     <svg
