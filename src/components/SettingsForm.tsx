@@ -6,6 +6,7 @@ import type {
   SplitMode,
 } from "../types";
 import { planCutsFromChapters } from "../lib/cutPlanner";
+import { maxPartCount } from "../lib/partCount";
 import { AdvancedSettings } from "./AdvancedSettings";
 
 interface Props {
@@ -15,6 +16,7 @@ interface Props {
   capabilities: RuntimeCapabilities | null;
   chapters: Chapter[];
   splitMode: SplitMode;
+  chimesReady: boolean;
   onChange: (partial: Partial<ProcessingSettings>) => void;
   onSplitModeChange: (mode: SplitMode) => void;
   onStart: () => void;
@@ -33,6 +35,7 @@ export function SettingsForm({
   capabilities,
   chapters,
   splitMode,
+  chimesReady,
   onChange,
   onSplitModeChange,
   onStart,
@@ -40,26 +43,40 @@ export function SettingsForm({
   const hasChapters = chapters.length >= 2;
   const useChapterMode = hasChapters && splitMode === "chapters";
 
+  // Slider's max is recomputed every render from listening time so
+  // changing playback speed shrinks/grows the range immediately. We
+  // intentionally don't push the clamped `parts` back into settings —
+  // handleStart and the worker re-clamp at the boundary, and keeping the
+  // saved targetPartCount untouched preserves the user's preference for
+  // future files where a higher count is still valid.
+  const listeningDurationSec = durationSec / settings.playbackSpeed;
+  const maxParts = maxPartCount(durationSec, settings.playbackSpeed);
+  const parts = Math.min(Math.max(1, settings.targetPartCount), maxParts);
+
+  const minutesEach = (listeningDurationSec / parts / 60).toFixed(1);
+
   // Dry-run the planner for chapter mode so the estimate reflects
   // subdivision (long chapters split by the target ceiling). Memoized
   // because a 100+ chapter audiobook would otherwise re-sort + re-plan
   // on every slider-drag render.
   const estimatedParts = useMemo(() => {
     if (useChapterMode) {
+      const targetSec = listeningDurationSec / parts;
       return planCutsFromChapters(
         chapters,
         durationSec,
-        settings.targetPartDurationSec,
+        targetSec,
         settings.playbackSpeed,
         [],
       ).length;
     }
-    return Math.max(1, Math.ceil(durationSec / settings.targetPartDurationSec));
+    return parts; // planCutsByCount guarantees exactly this many
   }, [
     useChapterMode,
     chapters,
     durationSec,
-    settings.targetPartDurationSec,
+    listeningDurationSec,
+    parts,
     settings.playbackSpeed,
   ]);
 
@@ -68,7 +85,11 @@ export function SettingsForm({
       <div className="settings-form__info">
         <span>Duration: {formatDuration(durationSec)}</span>
         <span>Size: {fileSizeMB.toFixed(1)} MB</span>
-        <span>~{estimatedParts} parts</span>
+        <span>
+          {useChapterMode && estimatedParts !== parts
+            ? `Requested ${parts} · Estimated ${estimatedParts} parts`
+            : `~${estimatedParts} parts`}
+        </span>
       </div>
 
       <label className="settings-form__field">
@@ -128,24 +149,22 @@ export function SettingsForm({
 
       <label className="settings-form__field">
         <span>
-          {useChapterMode ? "Max minutes per part" : "Minutes per part"}:{" "}
-          {settings.targetPartDurationSec / 60}
+          Number of parts: {parts} (~{minutesEach} min of content each)
         </span>
         <input
           type="range"
-          min={2}
-          max={15}
+          min={1}
+          max={Math.max(1, maxParts)}
           step={1}
-          value={settings.targetPartDurationSec / 60}
+          value={parts}
           onChange={(e) =>
-            onChange({ targetPartDurationSec: Number(e.target.value) * 60 })
+            onChange({ targetPartCount: Number(e.target.value) })
           }
         />
-        {useChapterMode && (
-          <small className="settings-form__hint">
-            Long chapters are split at silence points to stay under this.
-          </small>
-        )}
+        <small className="settings-form__hint">
+          Displayed duration is content only; final files are slightly longer due to chimes and announcements.
+          {useChapterMode && " Chapter mode may produce more parts than requested if there are more chapters."}
+        </small>
       </label>
 
       <label className="settings-form__field">
@@ -165,10 +184,10 @@ export function SettingsForm({
       <label className="settings-form__field settings-form__toggle">
         <input
           type="checkbox"
-          checked={settings.spokenPrefix}
-          onChange={(e) => onChange({ spokenPrefix: e.target.checked })}
+          checked={settings.spokenAnnouncements}
+          onChange={(e) => onChange({ spokenAnnouncements: e.target.checked })}
         />
-        <span>Spoken prefix before each part</span>
+        <span>Spoken announcements at the start and end of each part</span>
       </label>
 
       <label className="settings-form__field settings-form__toggle">
@@ -181,21 +200,43 @@ export function SettingsForm({
       </label>
 
       {settings.skipLongSilences && (
-        <label className="settings-form__field">
-          <span>
-            Cut silences longer than: {settings.skipLongSilenceMinSec.toFixed(1)}s
-          </span>
-          <input
-            type="range"
-            min={1}
-            max={10}
-            step={0.5}
-            value={settings.skipLongSilenceMinSec}
-            onChange={(e) =>
-              onChange({ skipLongSilenceMinSec: Number(e.target.value) })
-            }
-          />
-        </label>
+        <>
+          <label className="settings-form__field">
+            <span>
+              Cut silences longer than: {settings.skipLongSilenceMinSec.toFixed(1)}s
+            </span>
+            <input
+              type="range"
+              min={1}
+              max={10}
+              step={0.5}
+              value={settings.skipLongSilenceMinSec}
+              onChange={(e) =>
+                onChange({ skipLongSilenceMinSec: Number(e.target.value) })
+              }
+            />
+          </label>
+          <label className="settings-form__field">
+            <span>
+              Silence detection threshold: {settings.silenceRemovalThresholdDb} dB
+            </span>
+            <input
+              type="range"
+              min={-60}
+              max={-20}
+              step={1}
+              value={settings.silenceRemovalThresholdDb}
+              onChange={(e) =>
+                onChange({
+                  silenceRemovalThresholdDb: Number(e.target.value),
+                })
+              }
+            />
+            <small className="settings-form__hint">
+              Only cut audio below this level. Lower (more negative) = stricter; less likely to clip quiet speech.
+            </small>
+          </label>
+        </>
       )}
 
       <AdvancedSettings
@@ -207,7 +248,8 @@ export function SettingsForm({
       <button
         className="btn btn--primary"
         onClick={onStart}
-        disabled={!settings.podcastTitle.trim()}
+        disabled={!settings.podcastTitle.trim() || !chimesReady}
+        title={!chimesReady ? "Loading audio assets…" : undefined}
       >
         Start Processing
       </button>

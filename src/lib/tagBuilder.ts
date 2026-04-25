@@ -16,12 +16,14 @@ export function sanitizeTagValue(v: string | undefined): string | undefined {
   return clean || undefined;
 }
 
-function partTitle(cut: CutPoint): string {
+function partTitle(cut: CutPoint, totalParts: number): string {
   if (!cut.chapter) {
-    return `Part ${cut.partIndex + 1}`;
+    return `Part ${cut.partIndex + 1} of ${totalParts}`;
   }
   const ch = cut.chapter;
-  const title = ch.title.trim() || `Chapter ${ch.number}`;
+  // Named chapters keep their user-provided title as-is. The numbered
+  // fallback carries the counter so listeners still know where they are.
+  const title = ch.title.trim() || `Chapter ${ch.number} of ${ch.totalChapters}`;
   if (ch.part) {
     return `${title} (${ch.part.index} of ${ch.part.count})`;
   }
@@ -38,7 +40,7 @@ export function buildPartTags(ctx: TagContext): Tag[] {
     if (clean) tags.push({ key, value: clean });
   };
 
-  push("title", partTitle(cut));
+  push("title", partTitle(cut, totalParts));
   push("track", `${cut.partIndex + 1}/${totalParts}`);
   push("album", source.album ?? podcastTitle);
   push("album_artist", source.albumartist ?? source.artist);

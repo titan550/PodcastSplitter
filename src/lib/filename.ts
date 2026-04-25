@@ -97,19 +97,19 @@ function fitSlug(slug: string, budget: number): string {
  * rsync/cloud sync, ZIP tools, and every major filesystem.
  *
  *  Time mode:
- *    {hash}_{globalIndex}_{podcast_slug}__part_{partNumber}.mp3
+ *    {hash}_{globalIndex}_{podcast_slug}__part_{N}_of_{TOTAL}.mp3
  *  Chapter, single part:
- *    {hash}_{globalIndex}_{podcast_slug}__ch_{chapterNumber}_{chapter_slug}.mp3
+ *    {hash}_{globalIndex}_{podcast_slug}__part_{N}_of_{TOTAL}__ch_{C}_of_{TOTAL_CH}_{chapter_slug}.mp3
  *  Chapter, sub-part:
- *    {hash}_{globalIndex}_{podcast_slug}__ch_{chapterNumber}_{chapter_slug}__p_{index}_of_{count}.mp3
+ *    {hash}_{globalIndex}_{podcast_slug}__part_{N}_of_{TOTAL}__ch_{C}_of_{TOTAL_CH}_{chapter_slug}__p_{index}_of_{count}.mp3
  *
  * The leading `globalIndex` guarantees that a basic lexicographic sort
  * (in a ZIP, a file manager, or on a cheap MP3 player) reproduces
- * playback order across the whole podcast, even when chapters are
- * subdivided.
+ * playback order across the whole podcast. The trailing
+ * `__part_{N}_of_{TOTAL}` is the human-readable counter that matches the
+ * spoken announcement ("Part N of TOTAL").
  *
- * Structural fields (hash, global index, ch_/part_ number, sub-part
- * suffix, extension) are preserved under the 150-char cap; the podcast
+ * Structural fields are preserved under the 150-char cap; the podcast
  * slug is truncated first and the chapter slug second if overflow
  * remains. In the unreachable worst case, both slugs collapse to empty
  * and the structural fields still fit.
@@ -122,12 +122,13 @@ export function partFilename(
 ): string {
   const hash = titleHash(title);
   const globalIndex = padWidth(partIndex + 1, totalParts);
+  const totalPartsPadded = padWidth(totalParts, totalParts);
   const ext = ".mp3";
   const podcastSlug = slugFilenameSegment(title) || "untitled";
+  const partFixed = `__part_${globalIndex}_of_${totalPartsPadded}`;
 
   if (!chapter) {
-    const partNumber = padWidth(partIndex + 1, totalParts);
-    const structural = `__part_${partNumber}${ext}`;
+    const structural = `${partFixed}${ext}`;
     const head = `${hash}_${globalIndex}_`;
     const podcast = fitSlug(
       podcastSlug,
@@ -138,17 +139,18 @@ export function partFilename(
   }
 
   const chapterNumStr = padWidth(chapter.number, chapter.totalChapters);
+  const totalChaptersPadded = padWidth(chapter.totalChapters, chapter.totalChapters);
   const chapterSlug =
     slugFilenameSegment(chapter.title) || `chapter_${chapterNumStr}`;
 
   const subPartTail = chapter.part
     ? `__p_${chapter.part.index}_of_${chapter.part.count}`
     : "";
-  // Structural tail: "__ch_{NN}_" + chapterSlug + subPartTail + ".mp3"
-  // We split this into a fixed prefix ("__ch_{NN}_") and a sluggable
-  // chapter segment that can be truncated independently.
-  const chapterFixed = `__ch_${chapterNumStr}_`;
-  const structuralTailFixed = `${chapterFixed}${subPartTail}${ext}`;
+  // Structural tail: "__part_{NN}_of_{TT}__ch_{CC}_of_{DD}_" + chapterSlug + subPartTail + ".mp3"
+  // We split this into a fixed prefix and a sluggable chapter segment
+  // that can be truncated independently.
+  const chapterFixed = `__ch_${chapterNumStr}_of_${totalChaptersPadded}_`;
+  const structuralTailFixed = `${partFixed}${chapterFixed}${subPartTail}${ext}`;
   const head = `${hash}_${globalIndex}_`;
 
   // Budget: MAX_FILENAME = head + podcastSlug + chapterFixed + chapterSlugOut + subPartTail + ext
@@ -174,12 +176,12 @@ export function partFilename(
   // produce "___ch_" — strip the trailing underscore from head in that
   // case so the separator remains the intended "__".
   const headOut = podcast ? `${head}${podcast}` : head.replace(/_$/, "");
-  // Empty chapter slug collapses "__ch_{NN}_" to "__ch_{NN}" so we don't
-  // end with a dangling underscore before the sub-part tail or ext.
+  // Empty chapter slug collapses "__ch_{NN}_of_{DD}_" to "__ch_{NN}_of_{DD}"
+  // so we don't end with a dangling underscore before the sub-part tail or ext.
   const chapterSegment = chapterSlugOut
     ? `${chapterFixed}${chapterSlugOut}`
     : chapterFixed.replace(/_$/, "");
-  return `${headOut}${chapterSegment}${subPartTail}${ext}`;
+  return `${headOut}${partFixed}${chapterSegment}${subPartTail}${ext}`;
 }
 
 export function zipFilename(title: string): string {

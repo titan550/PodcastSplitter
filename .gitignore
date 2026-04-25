@@ -19,6 +19,7 @@ public/ffmpeg/ffmpeg-core.*
 public/ffmpeg/mt/
 public/ort/
 public/piper/
+public/chimes/
 
 # Local test audio — too big for git, user-provided
 *.mp3

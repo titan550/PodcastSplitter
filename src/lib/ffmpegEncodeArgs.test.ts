@@ -92,6 +92,9 @@ function hasMetadata(args: string[], key: string, value: string): boolean {
 const base: EncodeArgsInput = {
   inputFile: "input.mp3",
   prefixFile: undefined,
+  suffixFile: undefined,
+  beginChimeFile: "begin.wav",
+  endChimeFile: "end.wav",
   coverFile: undefined,
   startSec: 0,
   endSec: 300,
@@ -103,36 +106,35 @@ const base: EncodeArgsInput = {
   sourceChannels: 2,
   audioProfile: "source",
   tags: [
-    { key: "title", value: "Part 1" },
+    { key: "title", value: "Part 1 of 9" },
     { key: "encoder", value: "Podcast Splitter" },
   ],
 };
 
 describe("buildEncodeArgs", () => {
-  describe("no prefix, no cover, source mode", () => {
+  describe("no announcements (2-chime bookend)", () => {
     const args = buildEncodeArgs(base);
 
-    it("has source input", () => {
+    it("has begin chime as input 0, source as input 1, end chime as input 2", () => {
+      expect(args[0]).toBe("-i");
+      expect(args[1]).toBe("begin.wav");
       expect(has(args, "-i", "input.mp3")).toBe(true);
+      expect(has(args, "-i", "end.wav")).toBe(true);
     });
 
-    it("has atempo filter with aformat", () => {
-      const af = args[args.indexOf("-af") + 1];
-      expect(af).toContain("atempo=1.25");
-      expect(af).toContain("aformat=sample_fmts=fltp");
+    it("filter complex uses concat n=3 bookend pattern", () => {
+      const fc = args[args.indexOf("-filter_complex") + 1]!;
+      expect(fc).toContain("[0:a]aresample=");
+      expect(fc).toContain("atempo=1.25");
+      expect(fc).toContain("[b][seg][e]concat=n=3:v=0:a=1[out]");
     });
 
-    it("preserves source rate and channels", () => {
-      expect(hasSequence(args, "-ar", "44100")).toBe(true);
-      expect(hasSequence(args, "-ac", "2")).toBe(true);
-    });
-
-    it("has no cover mapping", () => {
-      expect(args.join(" ")).not.toContain("attached_pic");
+    it("maps [out]", () => {
+      expect(hasSequence(args, "-map", "[out]")).toBe(true);
     });
 
     it("has metadata", () => {
-      expect(hasMetadata(args, "title", "Part 1")).toBe(true);
+      expect(hasMetadata(args, "title", "Part 1 of 9")).toBe(true);
       expect(hasMetadata(args, "encoder", "Podcast Splitter")).toBe(true);
     });
 
@@ -141,98 +143,98 @@ describe("buildEncodeArgs", () => {
     });
   });
 
-  describe("no prefix, with cover, source mode", () => {
-    const args = buildEncodeArgs({ ...base, coverFile: "cover.jpg" });
+  describe("with announcements (4-chime pattern)", () => {
+    const args = buildEncodeArgs({
+      ...base,
+      prefixFile: "prefix.wav",
+      suffixFile: "suffix.wav",
+    });
 
-    it("maps cover as attached pic", () => {
-      expect(hasSequence(args, "-map", "1:v")).toBe(true);
+    it("filter complex uses asplit + concat n=7", () => {
+      const fc = args[args.indexOf("-filter_complex") + 1]!;
+      expect(fc).toContain("asplit=2[b1][b2]");
+      expect(fc).toContain("asplit=2[e1][e2]");
+      expect(fc).toContain("[b1][pfx][b2][seg][e1][sfx][e2]concat=n=7:v=0:a=1[out]");
+    });
+
+    it("prefix and suffix get apad=0.3", () => {
+      const fc = args[args.indexOf("-filter_complex") + 1]!;
+      expect(fc).toContain(",apad=pad_dur=0.3[pfx]");
+      expect(fc).toContain(",apad=pad_dur=0.3[sfx]");
+    });
+  });
+
+  describe("with cover art", () => {
+    it("maps cover correctly with bookend-only inputs", () => {
+      const args = buildEncodeArgs({ ...base, coverFile: "cover.jpg" });
+      // Inputs: begin (0), source (1), end (2), cover (3)
+      expect(hasSequence(args, "-map", "3:v")).toBe(true);
       expect(has(args, "-c:v", "copy")).toBe(true);
       expect(hasSequence(args, "-disposition:v:0", "attached_pic")).toBe(true);
-    });
-
-    it("includes id3v2 version", () => {
       expect(hasSequence(args, "-id3v2_version", "3")).toBe(true);
     });
-  });
 
-  describe("with prefix, no cover, source mode 44.1k stereo", () => {
-    const args = buildEncodeArgs({
-      ...base,
-      prefixFile: "prefix.wav",
-    });
-
-    it("has prefix as input 0 and source as input 1", () => {
-      const firstI = args.indexOf("-i");
-      expect(args[firstI + 1]).toBe("prefix.wav");
-    });
-
-    it("filter complex resamples prefix and source to target", () => {
-      const fc = args[args.indexOf("-filter_complex") + 1]!;
-      // Prefix upsampled to 44100 stereo
-      expect(fc).toContain(
-        "[0:a]aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo,apad=pad_dur=0.5[pfx]",
-      );
-      // Source also normalized
-      expect(fc).toContain(
-        "aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo[seg]",
-      );
-      expect(fc).toContain("[pfx][seg]concat=n=2:v=0:a=1[out]");
-    });
-
-    it("maps [out]", () => {
-      expect(hasSequence(args, "-map", "[out]")).toBe(true);
+    it("cover index shifts when announcements add prefix+suffix", () => {
+      const args = buildEncodeArgs({
+        ...base,
+        prefixFile: "prefix.wav",
+        suffixFile: "suffix.wav",
+        coverFile: "cover.jpg",
+      });
+      // Inputs: begin (0), prefix (1), source (2), suffix (3), end (4), cover (5)
+      expect(hasSequence(args, "-map", "5:v")).toBe(true);
     });
   });
 
-  describe("with prefix, with cover, voice mode", () => {
+  describe("voice profile", () => {
     const args = buildEncodeArgs({
       ...base,
-      prefixFile: "prefix.wav",
-      coverFile: "cover.jpg",
       audioProfile: "voice",
     });
 
-    it("filter complex uses 22050 mono", () => {
+    it("filter complex uses 22050 mono throughout", () => {
       const fc = args[args.indexOf("-filter_complex") + 1]!;
       expect(fc).toContain("aresample=22050");
       expect(fc).toContain("channel_layouts=mono");
     });
-
-    it("cover is input 2", () => {
-      expect(hasSequence(args, "-map", "2:v")).toBe(true);
-    });
   });
 
   describe("skip silence", () => {
-    it("includes silenceremove in filter", () => {
+    it("includes silenceremove BEFORE atempo in the source leg", () => {
       const args = buildEncodeArgs({
         ...base,
-        skipSilence: { minDurationSec: 3, thresholdDb: -30 },
+        skipSilence: { minDurationSec: 3, thresholdDb: -40 },
       });
-      const af = args[args.indexOf("-af") + 1]!;
-      expect(af).toContain("silenceremove=stop_periods=-1");
-      expect(af).toContain("stop_duration=3.00");
-      expect(af).toContain("stop_threshold=-30dB");
+      const fc = args[args.indexOf("-filter_complex") + 1]!;
+      expect(fc).toContain(
+        "silenceremove=stop_periods=-1:stop_duration=3.00:stop_threshold=-40dB:stop_silence=0.5",
+      );
+      // silenceremove must appear before atempo so stop_duration is measured in source-time.
+      const sil = fc.indexOf("silenceremove");
+      const tempo = fc.indexOf("atempo=1.25");
+      expect(sil).toBeLessThan(tempo);
     });
   });
 
   describe("source rate clamping", () => {
-    it("96k source → 48k in args", () => {
+    it("96k source → 48k in filter graph", () => {
       const args = buildEncodeArgs({
         ...base,
         sourceSampleRate: 96000,
       });
-      expect(hasSequence(args, "-ar", "48000")).toBe(true);
+      const fc = args[args.indexOf("-filter_complex") + 1]!;
+      expect(fc).toContain("aresample=48000");
     });
   });
 
   describe("5.1 channel downmix", () => {
-    it("6 channels → stereo", () => {
+    it("6 channels → stereo layout", () => {
       const args = buildEncodeArgs({
         ...base,
         sourceChannels: 6,
       });
-      expect(hasSequence(args, "-ac", "2")).toBe(true);
+      const fc = args[args.indexOf("-filter_complex") + 1]!;
+      expect(fc).toContain("channel_layouts=stereo");
     });
   });
 
@@ -241,6 +243,7 @@ describe("buildEncodeArgs", () => {
       const args = buildEncodeArgs({
         ...base,
         prefixFile: "prefix.wav",
+        suffixFile: "suffix.wav",
         coverFile: "cover.jpg",
       });
       const iInput = args.indexOf("-i");

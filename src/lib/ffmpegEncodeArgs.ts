@@ -7,7 +7,15 @@ export interface SkipSilenceOptions {
 
 export interface EncodeArgsInput {
   inputFile: string;
+  // Optional TTS-generated WAVs framing the source. Both are present when
+  // spokenAnnouncements is on and TTS succeeded; otherwise both are
+  // undefined. Treated as a matched pair by the filter graph.
   prefixFile: string | undefined;
+  suffixFile: string | undefined;
+  // Always present. Framing chimes that bookend each part (and each
+  // message, when announcements are on) — see buildEncodeArgs for layout.
+  beginChimeFile: string;
+  endChimeFile: string;
   coverFile: string | undefined;
   startSec: number;
   endSec: number;
@@ -56,16 +64,51 @@ export function resolveTargetFormat(
   return { rate, layout };
 }
 
+/**
+ * Silence-removal filter. Runs *before* atempo so `stop_duration` is
+ * measured in source-time seconds (matches user intuition: "cut silences
+ * longer than 3 s" means 3 s in the original recording). `stop_silence`
+ * keeps a small buffer on each side of a cut so the transition doesn't
+ * sound abrupt even when the threshold classifies a borderline word as
+ * silence.
+ *
+ * Returns the bare filter token (no leading comma). Callers insert the
+ * separator when composing the source leg of the filter graph. Cut-point
+ * snapping uses the permissive `silenceThresholdDb` setting; this filter
+ * uses the stricter `silenceRemovalThresholdDb` so false positives don't
+ * delete quiet speech.
+ */
 function buildSilenceRemoveStep(skip: SkipSilenceOptions | undefined): string {
   if (!skip) return "";
-  return `,silenceremove=stop_periods=-1:stop_duration=${skip.minDurationSec.toFixed(2)}:stop_threshold=${skip.thresholdDb}dB`;
+  return `silenceremove=stop_periods=-1:stop_duration=${skip.minDurationSec.toFixed(2)}:stop_threshold=${skip.thresholdDb}dB:stop_silence=0.5`;
 }
 
-/** Build the full ffmpeg arg array for encoding one part. */
+/**
+ * Build the full ffmpeg arg array for encoding one part.
+ *
+ * Input layout (numeric indices tracked as we push):
+ *   0  beginChimeFile  (always)
+ *   .  prefixFile      (start TTS, optional)
+ *   .  inputFile       (source, with -ss/-t seek)
+ *   .  suffixFile      (end TTS, optional)
+ *   .  endChimeFile    (always)
+ *   .  coverFile       (optional)
+ *
+ * Filter graph (announcements on, 4-chime pattern):
+ *   [begin] [prefix] [begin] [seg] [end] [suffix] [end] → concat n=7
+ * The begin/end chime inputs are each split into two outputs via
+ * `asplit=2` so they can appear twice without re-reading the file.
+ *
+ * Filter graph (announcements off, 2-chime pattern):
+ *   [begin] [seg] [end] → concat n=3
+ */
 export function buildEncodeArgs(input: EncodeArgsInput): string[] {
   const {
     inputFile,
     prefixFile,
+    suffixFile,
+    beginChimeFile,
+    endChimeFile,
     coverFile,
     startSec,
     endSec,
@@ -85,52 +128,66 @@ export function buildEncodeArgs(input: EncodeArgsInput): string[] {
     sourceSampleRate,
     sourceChannels,
   );
-  const channelCount = layout === "mono" ? 1 : 2;
-  const silenceStep = buildSilenceRemoveStep(skipSilence);
+  const silenceCore = buildSilenceRemoveStep(skipSilence);
+  const silencePrefix = silenceCore ? `${silenceCore},` : "";
   const aformat = `aresample=${rate},aformat=sample_fmts=fltp:channel_layouts=${layout}`;
 
   const args: string[] = [];
 
-  // --- Inputs ---
-  // Input ordering: [prefix?], source (with seek), [cover?]
-  // Track each input's index for -map/-filter_complex references.
-  let srcIndex: number;
+  // --- Inputs (indices assigned as we push) ---
+  let nextInputIdx = 0;
 
+  args.push("-i", beginChimeFile);
+  const beginIndex = nextInputIdx++;
+
+  let pfxIndex: number | undefined;
   if (prefixFile) {
     args.push("-i", prefixFile);
-    srcIndex = 1;
-  } else {
-    srcIndex = 0;
+    pfxIndex = nextInputIdx++;
   }
 
   args.push("-ss", startSec.toFixed(3), "-t", duration.toFixed(3));
   args.push("-i", inputFile);
+  const srcIndex = nextInputIdx++;
+
+  let sfxIndex: number | undefined;
+  if (suffixFile) {
+    args.push("-i", suffixFile);
+    sfxIndex = nextInputIdx++;
+  }
+
+  args.push("-i", endChimeFile);
+  const endIndex = nextInputIdx++;
 
   let coverIndex: number | undefined;
   if (coverFile) {
-    coverIndex = prefixFile ? 2 : 1;
     args.push("-i", coverFile);
+    coverIndex = nextInputIdx++;
   }
 
-  // --- Filter / audio processing ---
-  if (prefixFile) {
-    // Both streams go through explicit aresample + aformat so concat
-    // sees declared-matching params. The prefix upsamples from 22050
-    // mono to target; the source normalizes (usually a no-op).
-    const filterComplex =
-      `[0:a]${aformat},apad=pad_dur=0.5[pfx];` +
-      `[${srcIndex}:a]atempo=${speed}${silenceStep},${aformat}[seg];` +
-      `[pfx][seg]concat=n=2:v=0:a=1[out]`;
-    args.push("-filter_complex", filterComplex);
-    args.push("-map", "[out]");
+  // --- Filter complex ---
+  // asplit=2 reuses a single input stream twice without a second decode.
+  const concatParts: string[] = [];
+  let filterChain = "";
+
+  if (pfxIndex !== undefined && sfxIndex !== undefined) {
+    filterChain += `[${beginIndex}:a]${aformat},asplit=2[b1][b2];`;
+    filterChain += `[${pfxIndex}:a]${aformat},apad=pad_dur=0.3[pfx];`;
+    filterChain += `[${srcIndex}:a]${silencePrefix}atempo=${speed},${aformat}[seg];`;
+    filterChain += `[${sfxIndex}:a]${aformat},apad=pad_dur=0.3[sfx];`;
+    filterChain += `[${endIndex}:a]${aformat},asplit=2[e1][e2];`;
+    concatParts.push("[b1]", "[pfx]", "[b2]", "[seg]", "[e1]", "[sfx]", "[e2]");
   } else {
-    args.push(
-      "-af",
-      `atempo=${speed}${silenceStep},aformat=sample_fmts=fltp`,
-    );
-    args.push("-map", "0:a");
-    args.push("-ar", String(rate), "-ac", String(channelCount));
+    filterChain += `[${beginIndex}:a]${aformat}[b];`;
+    filterChain += `[${srcIndex}:a]${silencePrefix}atempo=${speed},${aformat}[seg];`;
+    filterChain += `[${endIndex}:a]${aformat}[e];`;
+    concatParts.push("[b]", "[seg]", "[e]");
   }
+  const n = concatParts.length;
+  const filterComplex = `${filterChain}${concatParts.join("")}concat=n=${n}:v=0:a=1[out]`;
+
+  args.push("-filter_complex", filterComplex);
+  args.push("-map", "[out]");
 
   // --- Cover art mapping ---
   if (coverIndex !== undefined) {

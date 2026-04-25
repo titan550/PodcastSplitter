@@ -43,7 +43,7 @@ describe("sanitizeTagValue", () => {
 
 describe("buildPartTags", () => {
   describe("time mode", () => {
-    it("sets title to Part N", () => {
+    it("sets title to Part N of TOTAL", () => {
       const cut: CutPoint = { startSec: 0, endSec: 300, partIndex: 0 };
       const tags = buildPartTags({
         cut,
@@ -51,7 +51,7 @@ describe("buildPartTags", () => {
         podcastTitle: "My Show",
         source: emptySrc,
       });
-      expect(tag(tags, "title")).toBe("Part 1");
+      expect(tag(tags, "title")).toBe("Part 1 of 10");
       expect(tag(tags, "track")).toBe("1/10");
     });
   });
@@ -99,7 +99,7 @@ describe("buildPartTags", () => {
   });
 
   describe("empty chapter title", () => {
-    it("falls back to Chapter N", () => {
+    it("falls back to Chapter N of M", () => {
       const cut: CutPoint = {
         startSec: 0,
         endSec: 300,
@@ -112,7 +112,7 @@ describe("buildPartTags", () => {
         podcastTitle: "Show",
         source: emptySrc,
       });
-      expect(tag(tags, "title")).toBe("Chapter 3");
+      expect(tag(tags, "title")).toBe("Chapter 3 of 5");
     });
   });
 

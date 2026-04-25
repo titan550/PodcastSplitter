@@ -52,6 +52,39 @@ export function planCuts(
   return cuts;
 }
 
+/**
+ * Plan exactly `partCount` cuts covering `totalDurationSec`. Each boundary
+ * is allowed to snap to a nearby silence within a grace window capped at
+ * 30% of the per-segment duration so consecutive cuts cannot cross.
+ *
+ * Unlike planCuts, this does NOT merge a short trailing segment — the
+ * count is the contract. Callers (UI + worker) clamp partCount against
+ * a 5-minute floor so trailing segments stay audible.
+ */
+export function planCutsByCount(
+  totalDurationSec: number,
+  partCount: number,
+  silences: SilenceInterval[],
+): CutPoint[] {
+  if (partCount <= 1) {
+    return [{ startSec: 0, endSec: totalDurationSec, partIndex: 0 }];
+  }
+  const segLen = totalDurationSec / partCount;
+  // Cap grace at 30% of segment length so cut[i] and cut[i+1] can't cross.
+  const graceWindow = Math.min(GRACE_WINDOW_SEC, segLen * 0.3);
+
+  const cuts: CutPoint[] = [];
+  let cursor = 0;
+  for (let i = 1; i < partCount; i++) {
+    const ideal = i * segLen;
+    const cutAt = findBestCut(ideal, silences, graceWindow);
+    cuts.push({ startSec: cursor, endSec: cutAt, partIndex: cuts.length });
+    cursor = cutAt;
+  }
+  cuts.push({ startSec: cursor, endSec: totalDurationSec, partIndex: cuts.length });
+  return cuts;
+}
+
 // Chapters shorter than (target * CHAPTER_TOLERANCE) stay as a single part
 // instead of subdividing into a lopsided 2-way split. At the default 5-min
 // target this tolerance (30 s) lines up with MIN_TRAILING_SEC so the inner
@@ -198,39 +231,44 @@ export function planCutsFromChapters(
   return cuts;
 }
 
-function findBestCut(
+/**
+ * Return the best cut point near `idealEnd` by intersecting candidate
+ * silences with the grace window and scoring their midpoints. The result
+ * is always in `[idealEnd - graceSec, idealEnd + graceSec]` — critical
+ * for the exact-count planner, where monotonicity of successive cuts
+ * depends on cut points not escaping their segment's grace window.
+ *
+ * Exported so the regression test can target it directly (a previous
+ * version filtered by `silence.start` inside the window but returned the
+ * full silence midpoint, which could land far outside the window when a
+ * long silence straddled the edge).
+ */
+export function findBestCut(
   idealEnd: number,
   silences: SilenceInterval[],
+  graceSec: number = GRACE_WINDOW_SEC,
 ): number {
-  const windowStart = idealEnd - GRACE_WINDOW_SEC;
-  const windowEnd = idealEnd + GRACE_WINDOW_SEC;
+  const windowStart = idealEnd - graceSec;
+  const windowEnd = idealEnd + graceSec;
 
-  const candidates = silences.filter(
-    (s) => s.start >= windowStart && s.start <= windowEnd,
-  );
+  let bestMid = idealEnd;
+  let bestDist = Infinity;
+  let bestDur = -Infinity;
 
-  if (candidates.length === 0) {
-    return idealEnd;
-  }
-
-  // Pick silence closest to ideal; tie-break by longer silence, then prefer earlier
-  let best = candidates[0]!;
-  let bestMid = (best.start + best.end) / 2;
-  let bestDist = Math.abs(bestMid - idealEnd);
-  let bestDur = best.end - best.start;
-
-  for (let i = 1; i < candidates.length; i++) {
-    const c = candidates[i]!;
-    const mid = (c.start + c.end) / 2;
+  for (const s of silences) {
+    if (s.end <= windowStart || s.start >= windowEnd) continue; // any overlap
+    const segStart = Math.max(s.start, windowStart);
+    const segEnd = Math.min(s.end, windowEnd);
+    const dur = segEnd - segStart;
+    if (dur <= 0) continue;
+    const mid = (segStart + segEnd) / 2;
     const dist = Math.abs(mid - idealEnd);
-    const dur = c.end - c.start;
 
     if (
       dist < bestDist ||
       (dist === bestDist && dur > bestDur) ||
       (dist === bestDist && dur === bestDur && mid < bestMid)
     ) {
-      best = c;
       bestMid = mid;
       bestDist = dist;
       bestDur = dur;

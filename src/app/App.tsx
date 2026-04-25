@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useJobReducer } from "./useJobReducer";
 import { FilePicker } from "../components/FilePicker";
 import { SettingsForm } from "../components/SettingsForm";
@@ -9,6 +9,8 @@ import { Logo } from "../components/Logo";
 import { extractMetadata, toSourceMetadata } from "../lib/metadata";
 import { zipFilename } from "../lib/filename";
 import { saveSettings } from "../lib/jobStore";
+import { assetUrl } from "../lib/assetUrl";
+import { maxPartCount } from "../lib/partCount";
 import { detectCapabilities, pickParallelEncoding } from "../lib/runtimeCapabilities";
 import type { WorkerOutMessage, ProcessingSettings } from "../types";
 import type { TTSEngine } from "../lib/tts/TTSEngine";
@@ -29,9 +31,23 @@ export function App() {
   const statusRef = useRef(state.status);
   statusRef.current = state.status;
 
+  // Chime audio. Fetched once on mount, then copied (slice(0)) into every
+  // START_JOB payload so multiple jobs in the same session still work.
+  const beginChimeRef = useRef<ArrayBuffer | null>(null);
+  const endChimeRef = useRef<ArrayBuffer | null>(null);
+  const [chimesLoaded, setChimesLoaded] = useState(false);
+  // Generation counter gates stale chime-fetch results from StrictMode
+  // double-mount and overlapping manual retries.
+  const loadGenRef = useRef(0);
+
+  // Auto-save settings on change. Skipped while a legacy targetPartDurationSec
+  // is pending conversion — otherwise the first pre-file-selection render
+  // would overwrite localStorage with the default targetPartCount and we'd
+  // lose the user's prior preference on reload.
   useEffect(() => {
+    if (state.legacyTargetPartDurationSec != null) return;
     saveSettings(state.settings);
-  }, [state.settings]);
+  }, [state.settings, state.legacyTargetPartDurationSec]);
 
   // Idempotent TTS init. Returns existing promise if in-flight or complete.
   const initTTS = useCallback((settings: ProcessingSettings): Promise<void> => {
@@ -60,11 +76,46 @@ export function App() {
   // while the user is still picking a file. Silently ignores errors —
   // they surface at processing time if still relevant.
   useEffect(() => {
-    if (state.settings.spokenPrefix) {
+    if (state.settings.spokenAnnouncements) {
       initTTS(state.settings).catch(() => {});
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Chimes are mandatory (always played around each part). Fetch once on
+  // mount; retry path is exposed through the ErrorBanner for fetch failures.
+  const loadChimes = useCallback(async () => {
+    const gen = ++loadGenRef.current;
+    const load = async (name: string) => {
+      const r = await fetch(assetUrl(`chimes/${name}`));
+      if (!r.ok) throw new Error(`HTTP ${r.status} fetching ${name}`);
+      return r.arrayBuffer();
+    };
+    try {
+      const [b, e] = await Promise.all([load("begin.wav"), load("end.wav")]);
+      if (gen !== loadGenRef.current) return;
+      beginChimeRef.current = b;
+      endChimeRef.current = e;
+      setChimesLoaded(true);
+      dispatch({ type: "CLEAR_CHIME_ERROR" });
+    } catch (err) {
+      if (gen !== loadGenRef.current) return;
+      const message = err instanceof Error ? err.message : String(err);
+      dispatch({
+        type: "ERROR",
+        payload: {
+          message: `Failed to load chime audio: ${message}. Tap retry or reload the page.`,
+          phase: "loading",
+          recoverable: true,
+          source: "chime-load",
+        },
+      });
+    }
+  }, [dispatch]);
+
+  useEffect(() => {
+    void loadChimes();
+  }, [loadChimes]);
 
   const requestWakeLock = useCallback(async () => {
     try {
@@ -228,6 +279,7 @@ export function App() {
           type: "FILE_SELECTED",
           file,
           title: meta.title,
+          durationSec: meta.durationSec,
           chapters: meta.chapters,
           sourceMetadata: toSourceMetadata(meta),
         });
@@ -260,10 +312,11 @@ export function App() {
 
   const handleStart = useCallback(() => {
     if (!state.file || !state.sourceMetadata) return;
+    if (!beginChimeRef.current || !endChimeRef.current) return;
     dispatch({ type: "START" });
     requestWakeLock();
 
-    if (state.settings.spokenPrefix) {
+    if (state.settings.spokenAnnouncements) {
       initTTS(state.settings).catch((err) => {
         const message = err instanceof Error ? err.message : String(err);
         dispatch({
@@ -286,6 +339,13 @@ export function App() {
           }
         : state.settings;
 
+    // Clamp at the boundary so a stale targetPartCount in settings (from a
+    // playback-speed change that hasn't propagated yet) can't reach the worker.
+    const targetPartCount = Math.min(
+      Math.max(1, resolvedSettings.targetPartCount),
+      maxPartCount(durationRef.current, resolvedSettings.playbackSpeed),
+    );
+
     workerRef.current?.postMessage({
       type: "START_JOB",
       payload: {
@@ -295,6 +355,11 @@ export function App() {
         splitMode: state.splitMode,
         chapters: state.splitMode === "chapters" ? state.chapters : [],
         sourceMetadata: state.sourceMetadata,
+        // .slice(0) per job so re-running from a fresh Reset still works —
+        // ff.writeFile in the worker eventually detaches what it receives.
+        beginChime: beginChimeRef.current.slice(0),
+        endChime: endChimeRef.current.slice(0),
+        targetPartCount,
       },
     });
   }, [
@@ -355,6 +420,7 @@ export function App() {
   }, [state.status, state.zipBlob, handleDownload]);
 
   const isMobile = state.capabilities?.isMobile ?? false;
+  const isChimeError = state.error?.source === "chime-load";
 
   return (
     <div className="app">
@@ -371,7 +437,10 @@ export function App() {
       {state.error && (
         <ErrorBanner
           error={state.error}
-          onDismiss={() => dispatch({ type: "RESET" })}
+          onRetry={isChimeError ? () => void loadChimes() : undefined}
+          onDismiss={
+            isChimeError ? undefined : () => dispatch({ type: "RESET" })
+          }
         />
       )}
 
@@ -384,7 +453,7 @@ export function App() {
             />
             <div className="app__privacy">
               <p>All audio stays in your browser.</p>
-              <p>Spoken prefix generation also runs locally.</p>
+              <p>Spoken announcements are generated locally too.</p>
             </div>
           </>
         )}
@@ -397,6 +466,7 @@ export function App() {
             capabilities={state.capabilities}
             chapters={state.chapters}
             splitMode={state.splitMode}
+            chimesReady={chimesLoaded}
             onChange={(s) =>
               dispatch({ type: "SETTINGS_CHANGED", settings: s })
             }

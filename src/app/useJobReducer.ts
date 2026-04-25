@@ -9,7 +9,8 @@ import type {
   SourceMetadata,
 } from "../types";
 import { DEFAULT_SETTINGS } from "../types";
-import { loadSettings } from "../lib/jobStore";
+import { loadLegacyTargetPartDurationSec, loadSettings } from "../lib/jobStore";
+import { maxPartCount } from "../lib/partCount";
 
 export type JobStatus =
   | "idle"
@@ -32,6 +33,10 @@ export interface JobState {
   splitMode: SplitMode;
   chapters: Chapter[];
   sourceMetadata: SourceMetadata | null;
+  // Pre-rename setting value we rescued from localStorage. Converted to
+  // targetPartCount once the first file's duration is known (FILE_SELECTED),
+  // then cleared. Null for new users and anyone without a legacy value.
+  legacyTargetPartDurationSec: number | null;
 }
 
 export type JobAction =
@@ -39,6 +44,7 @@ export type JobAction =
       type: "FILE_SELECTED";
       file: File;
       title: string;
+      durationSec: number;
       chapters: Chapter[];
       sourceMetadata: SourceMetadata;
     }
@@ -48,6 +54,7 @@ export type JobAction =
   | { type: "PROGRESS"; payload: ProgressPayload }
   | { type: "COMPLETE"; zipBlob: Blob }
   | { type: "ERROR"; payload: ErrorPayload }
+  | { type: "CLEAR_CHIME_ERROR" }
   | { type: "RESET" }
   | { type: "CAPABILITIES"; payload: RuntimeCapabilities };
 
@@ -62,24 +69,41 @@ const initialState: JobState = {
   splitMode: "time",
   chapters: [],
   sourceMetadata: null,
+  legacyTargetPartDurationSec: null,
 };
 
 function reducer(state: JobState, action: JobAction): JobState {
   switch (action.type) {
-    case "FILE_SELECTED":
+    case "FILE_SELECTED": {
+      let settings = { ...state.settings, podcastTitle: action.title };
+      let legacyTargetPartDurationSec = state.legacyTargetPartDurationSec;
+
+      // One-shot migration: convert legacy targetPartDurationSec (seconds)
+      // to a roughly equivalent targetPartCount now that duration is known.
+      if (legacyTargetPartDurationSec != null && action.durationSec > 0) {
+        const rawCount = Math.round(
+          action.durationSec / settings.playbackSpeed / legacyTargetPartDurationSec,
+        );
+        const max = maxPartCount(action.durationSec, settings.playbackSpeed);
+        settings = {
+          ...settings,
+          targetPartCount: Math.min(Math.max(1, rawCount), max),
+        };
+        legacyTargetPartDurationSec = null;
+      }
+
       return {
         ...state,
         status: "configuring",
         file: action.file,
-        settings: {
-          ...state.settings,
-          podcastTitle: action.title,
-        },
+        settings,
         chapters: action.chapters,
         splitMode: action.chapters.length >= 2 ? "chapters" : "time",
         sourceMetadata: action.sourceMetadata,
         error: null,
+        legacyTargetPartDurationSec,
       };
+    }
 
     case "SETTINGS_CHANGED":
       return {
@@ -123,11 +147,22 @@ function reducer(state: JobState, action: JobAction): JobState {
         progress: null,
       };
 
+    case "CLEAR_CHIME_ERROR": {
+      // Scoped: no-op if the current error isn't a chime-load. Lets the
+      // success path of loadChimes unconditionally dispatch without
+      // wiping someone else's error.
+      if (state.error?.source !== "chime-load") return state;
+      if (state.status !== "error") return { ...state, error: null };
+      const restored: JobStatus = state.file ? "configuring" : "idle";
+      return { ...state, error: null, status: restored };
+    }
+
     case "RESET":
       return {
         ...initialState,
         capabilities: state.capabilities,
         settings: state.settings, // preserve user's saved settings
+        legacyTargetPartDurationSec: state.legacyTargetPartDurationSec,
         zipBlob: null,
       };
 
@@ -145,9 +180,11 @@ function reducer(state: JobState, action: JobAction): JobState {
 // saved values with defaults in React StrictMode double-mount.
 function init(): JobState {
   const saved = loadSettings();
+  const legacy = loadLegacyTargetPartDurationSec();
   return {
     ...initialState,
     settings: { ...DEFAULT_SETTINGS, ...saved },
+    legacyTargetPartDurationSec: legacy,
   };
 }
 

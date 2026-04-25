@@ -11,13 +11,13 @@ const VALID_AUDIO_PROFILES = ["source", "voice"];
  *  the DEFAULT_SETTINGS spread fills them in instead. */
 function isValidValue(key: keyof ProcessingSettings, value: unknown): boolean {
   switch (key) {
-    case "targetPartDurationSec":
-      return typeof value === "number" && value >= 120 && value <= 900;
+    case "targetPartCount":
+      return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 120;
     case "podcastTitle":
       return typeof value === "string";
     case "playbackSpeed":
       return typeof value === "number" && value >= 1.0 && value <= 2.0;
-    case "spokenPrefix":
+    case "spokenAnnouncements":
     case "skipLongSilences":
       return typeof value === "boolean";
     case "outputBitrate":
@@ -26,6 +26,8 @@ function isValidValue(key: keyof ProcessingSettings, value: unknown): boolean {
       return typeof value === "string" && value.length > 0;
     case "silenceThresholdDb":
       return typeof value === "number" && value >= -50 && value <= -10;
+    case "silenceRemovalThresholdDb":
+      return typeof value === "number" && value >= -60 && value <= -20;
     case "silenceMinDurationSec":
       return typeof value === "number" && value >= 0.1 && value <= 2.0;
     case "parallelEncoding":
@@ -51,6 +53,21 @@ export function loadSettings(): Partial<ProcessingSettings> {
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
       return {};
     const obj = parsed as Record<string, unknown>;
+
+    // One-time rename migration: preserve explicit `spokenPrefix: false`
+    // so users who had announcements disabled keep them disabled. The key
+    // is removed so it never reappears in saved state.
+    if (typeof obj.spokenPrefix === "boolean" && obj.spokenAnnouncements === undefined) {
+      obj.spokenAnnouncements = obj.spokenPrefix;
+    }
+    delete obj.spokenPrefix;
+
+    // Drop legacy `targetPartDurationSec` so it doesn't leak past load.
+    // Its value is recovered via loadLegacyTargetPartDurationSec() and
+    // converted to targetPartCount once the first file's duration is
+    // known (see useJobReducer FILE_SELECTED handler).
+    delete obj.targetPartDurationSec;
+
     const out: Record<string, unknown> = {};
     const keys = Object.keys(DEFAULT_SETTINGS) as (keyof ProcessingSettings)[];
     for (const key of keys) {
@@ -61,6 +78,28 @@ export function loadSettings(): Partial<ProcessingSettings> {
     return out as Partial<ProcessingSettings>;
   } catch {
     return {};
+  }
+}
+
+/**
+ * Pre-rename migration shim: returns the saved `targetPartDurationSec` if
+ * present and valid, so the reducer can convert it to an equivalent
+ * `targetPartCount` once the first file's duration is known. Returns null
+ * for new users or any invalid/missing value.
+ */
+export function loadLegacyTargetPartDurationSec(): number | null {
+  try {
+    const raw = localStorage.getItem(SETTINGS_KEY);
+    if (!raw) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
+      return null;
+    const v = (parsed as Record<string, unknown>).targetPartDurationSec;
+    if (typeof v !== "number" || !Number.isFinite(v)) return null;
+    if (v < 120 || v > 900) return null;
+    return v;
+  } catch {
+    return null;
   }
 }
 

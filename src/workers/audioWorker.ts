@@ -6,9 +6,11 @@ import type {
   Chapter,
   SplitMode,
   CutPoint,
+  SilenceInterval,
   SourceMetadata,
 } from "../types";
 import { detectCapabilities } from "../lib/runtimeCapabilities";
+import { maxPartCount } from "../lib/partCount";
 import {
   getFFmpeg,
   getFFmpegPool,
@@ -20,10 +22,10 @@ import { buildPartTags } from "../lib/tagBuilder";
 import { detectSilences } from "../lib/silenceDetection";
 import {
   anyChapterWillSubdivide,
-  planCuts,
+  planCutsByCount,
   planCutsFromChapters,
 } from "../lib/cutPlanner";
-import { buildSpeechText } from "../lib/tts/speechText";
+import { buildEndSpeechText, buildSpeechText } from "../lib/tts/speechText";
 import { partFilename } from "../lib/filename";
 import { splitExt } from "../lib/supportedFormats";
 import { createZipWriter, addPartToZip, finalizeZip } from "../lib/exportZip";
@@ -106,6 +108,8 @@ function computeOverallPct(
 }
 
 const COVER_FILE = "cover.jpg";
+const BEGIN_CHIME_FILE = "begin_chime.wav";
+const END_CHIME_FILE = "end_chime.wav";
 
 async function runPipeline(
   file: File,
@@ -114,10 +118,28 @@ async function runPipeline(
   splitMode: SplitMode,
   chapters: Chapter[],
   sourceMetadata: SourceMetadata,
+  beginChime: ArrayBuffer,
+  endChime: ArrayBuffer,
+  targetPartCount: number,
 ): Promise<void> {
   if (totalDuration <= 0) {
     throw new Error("Could not determine audio duration");
   }
+  if (!Number.isFinite(settings.playbackSpeed) || settings.playbackSpeed <= 0) {
+    throw new Error("Invalid playback speed");
+  }
+  const maxParts = maxPartCount(totalDuration, settings.playbackSpeed);
+  if (
+    !Number.isInteger(targetPartCount) ||
+    targetPartCount < 1 ||
+    targetPartCount > maxParts
+  ) {
+    throw new Error(
+      `Invalid part count ${targetPartCount} (valid range 1..${maxParts})`,
+    );
+  }
+  const derivedTargetSec =
+    totalDuration / settings.playbackSpeed / targetPartCount;
 
   const parallelism = settings.parallelEncoding;
 
@@ -145,11 +167,11 @@ async function runPipeline(
     anyChapterWillSubdivide(
       chapters,
       totalDuration,
-      settings.targetPartDurationSec,
+      derivedTargetSec,
       settings.playbackSpeed,
     );
 
-  let silences: { start: number; end: number }[] = [];
+  let silences: SilenceInterval[] = [];
   if (needsSilences) {
     progress("analyzing", 30, 0, undefined, "Detecting silences...");
     silences = await detectSilences(
@@ -175,18 +197,13 @@ async function runPipeline(
     cuts = planCutsFromChapters(
       chapters,
       totalDuration,
-      settings.targetPartDurationSec,
+      derivedTargetSec,
       settings.playbackSpeed,
       silences,
     );
   } else {
     progress("planning", 0, 0, undefined, "Planning segments...");
-    cuts = planCuts(
-      totalDuration,
-      settings.targetPartDurationSec,
-      settings.playbackSpeed,
-      silences,
-    );
+    cuts = planCutsByCount(totalDuration, targetPartCount, silences);
   }
   const totalParts = cuts.length;
   progress(
@@ -199,29 +216,40 @@ async function runPipeline(
 
   createZipWriter();
 
-  // Pre-request all TTS prefixes upfront so the main thread generates them
-  // in parallel with ffmpeg encoding. Results stream back as each completes.
-  const ttsPromises: Promise<Blob>[] = settings.spokenPrefix
-    ? cuts.map((cut, i) =>
-        requestTTS(
-          cut.chapter
-            ? buildSpeechText({
-                kind: "chapter",
-                chapterNumber: cut.chapter.number,
-                podcastTitle: settings.podcastTitle,
-                chapterTitle: cut.chapter.title,
-                subPart: cut.chapter.part,
-              })
-            : buildSpeechText({
-                kind: "time",
-                partIndex: i,
-                podcastTitle: settings.podcastTitle,
-                startSec: cut.startSec,
-                endSec: cut.endSec,
-              }),
-        ),
-      )
-    : [];
+  // Pre-request all TTS prefixes + suffixes upfront so the main thread
+  // generates them in parallel with ffmpeg encoding. Requests are
+  // INTERLEAVED (prefix[0], suffix[0], prefix[1], suffix[1], ...) so
+  // part 0 only waits for 2 synthesis operations before its encode can
+  // start — instead of (N+1) if we queued all prefixes before all
+  // suffixes.
+  const ttsPrefixPromises: Promise<Blob>[] = [];
+  const ttsSuffixPromises: Promise<Blob>[] = [];
+  if (settings.spokenAnnouncements) {
+    for (let i = 0; i < cuts.length; i++) {
+      const cut = cuts[i]!;
+      const prefixText = cut.chapter
+        ? buildSpeechText({
+            kind: "chapter",
+            partIndex: i,
+            totalParts,
+            chapterNumber: cut.chapter.number,
+            totalChapters: cut.chapter.totalChapters,
+            podcastTitle: settings.podcastTitle,
+            chapterTitle: cut.chapter.title,
+            subPart: cut.chapter.part,
+          })
+        : buildSpeechText({
+            kind: "time",
+            partIndex: i,
+            totalParts,
+            podcastTitle: settings.podcastTitle,
+            startSec: cut.startSec,
+            endSec: cut.endSec,
+          });
+      ttsPrefixPromises.push(requestTTS(prefixText));
+      ttsSuffixPromises.push(requestTTS(buildEndSpeechText(i, totalParts)));
+    }
+  }
 
   // Load additional ffmpeg instances for parallel encoding and write a
   // fresh copy of the source to each. Memory cost: parallelism × sourceSize
@@ -236,11 +264,15 @@ async function runPipeline(
       if (idx === 0) {
         if (hasCover)
           await ff.writeFile(COVER_FILE, new Uint8Array(coverBytes!.buffer.slice(0)));
+        await ff.writeFile(BEGIN_CHIME_FILE, new Uint8Array(beginChime.slice(0)));
+        await ff.writeFile(END_CHIME_FILE, new Uint8Array(endChime.slice(0)));
         return;
       }
       await ff.writeFile(INPUT_FILE, new Uint8Array(sourceBuffer!.slice(0)));
       if (hasCover)
         await ff.writeFile(COVER_FILE, new Uint8Array(coverBytes!.buffer.slice(0)));
+      await ff.writeFile(BEGIN_CHIME_FILE, new Uint8Array(beginChime.slice(0)));
+      await ff.writeFile(END_CHIME_FILE, new Uint8Array(endChime.slice(0)));
     }),
   );
   // Release the retained source buffer now that every instance has a copy.
@@ -294,7 +326,7 @@ async function runPipeline(
     const skipSilence = settings.skipLongSilences
       ? {
           minDurationSec: settings.skipLongSilenceMinSec,
-          thresholdDb: settings.silenceThresholdDb,
+          thresholdDb: settings.silenceRemovalThresholdDb,
         }
       : undefined;
 
@@ -306,16 +338,26 @@ async function runPipeline(
     });
 
     let prefixFile: string | undefined;
-    if (settings.spokenPrefix) {
-      const wavBlob = await ttsPromises[partIdx]!;
-      const wavData = new Uint8Array(await wavBlob.arrayBuffer());
+    let suffixFile: string | undefined;
+    const cleanFiles: string[] = [outputFile];
+    if (settings.spokenAnnouncements) {
+      const prefixBlob = await ttsPrefixPromises[partIdx]!;
+      const suffixBlob = await ttsSuffixPromises[partIdx]!;
+      const prefixData = new Uint8Array(await prefixBlob.arrayBuffer());
+      const suffixData = new Uint8Array(await suffixBlob.arrayBuffer());
       prefixFile = `prefix_${partIdx}.wav`;
-      await ff.writeFile(prefixFile, wavData);
+      suffixFile = `suffix_${partIdx}.wav`;
+      await ff.writeFile(prefixFile, prefixData);
+      await ff.writeFile(suffixFile, suffixData);
+      cleanFiles.push(prefixFile, suffixFile);
     }
 
     await encodePart(ff, {
       inputFile: INPUT_FILE,
       prefixFile,
+      suffixFile,
+      beginChimeFile: BEGIN_CHIME_FILE,
+      endChimeFile: END_CHIME_FILE,
       coverFile: hasCover ? COVER_FILE : undefined,
       startSec: cut.startSec,
       endSec: cut.endSec,
@@ -332,8 +374,6 @@ async function runPipeline(
     const partData = await ff.readFile(outputFile);
     completedParts.set(partIdx, partData as Uint8Array);
 
-    const cleanFiles = [outputFile];
-    if (prefixFile) cleanFiles.push(prefixFile);
     await cleanupFiles(ff, ...cleanFiles);
 
     partsCompleted++;
@@ -369,7 +409,8 @@ async function runPipeline(
   const zipBlob = await finalizeZip();
   progress("zipping", 100, totalParts, undefined, "ZIP ready");
 
-  const finalClean = hasCover ? [INPUT_FILE, COVER_FILE] : [INPUT_FILE];
+  const finalClean = [INPUT_FILE, BEGIN_CHIME_FILE, END_CHIME_FILE];
+  if (hasCover) finalClean.push(COVER_FILE);
   await Promise.all(pool.map((ff) => cleanupFiles(ff, ...finalClean)));
   terminateFFmpeg();
 
@@ -389,6 +430,9 @@ self.onmessage = async (e: MessageEvent<WorkerInMessage>) => {
         e.data.payload.splitMode,
         e.data.payload.chapters,
         e.data.payload.sourceMetadata,
+        e.data.payload.beginChime,
+        e.data.payload.endChime,
+        e.data.payload.targetPartCount,
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

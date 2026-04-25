@@ -1,14 +1,23 @@
 // --- Processing settings ---
 
 export interface ProcessingSettings {
-  targetPartDurationSec: number;
+  // Desired number of output parts. Time mode honors this exactly; chapter
+  // mode uses it to derive a per-chapter max duration (chapter count can
+  // still dominate the final count).
+  targetPartCount: number;
   podcastTitle: string;
   playbackSpeed: number;
-  spokenPrefix: boolean;
+  // Gates both the start-of-part and end-of-part TTS announcements.
+  spokenAnnouncements: boolean;
   outputBitrate: string;
   voiceId: string;
+  // Permissive threshold used for cut-point *snapping* (detectSilences).
   silenceThresholdDb: number;
   silenceMinDurationSec: number;
+  // Stricter threshold used for silence *removal* so quiet speech isn't
+  // misclassified and deleted. Decoupled from silenceThresholdDb because
+  // removal and snapping want opposite biases.
+  silenceRemovalThresholdDb: number;
   // Number of parallel ffmpeg instances for encoding parts.
   // 0 = auto (picked based on file size + device capabilities at job start)
   // 1-4 = explicit user choice
@@ -24,14 +33,15 @@ export interface ProcessingSettings {
 }
 
 export const DEFAULT_SETTINGS: ProcessingSettings = {
-  targetPartDurationSec: 300,
+  targetPartCount: 6,
   podcastTitle: "",
   playbackSpeed: 1.25,
-  spokenPrefix: true,
+  spokenAnnouncements: true,
   outputBitrate: "128k",
   voiceId: "en_US-amy-low",
   silenceThresholdDb: -30,
   silenceMinDurationSec: 0.5,
+  silenceRemovalThresholdDb: -40,
   parallelEncoding: 0, // auto
   skipLongSilences: false,
   skipLongSilenceMinSec: 3,
@@ -125,6 +135,12 @@ export type WorkerInMessage =
         splitMode: SplitMode;
         chapters: Chapter[]; // empty when splitMode === "time"
         sourceMetadata: SourceMetadata;
+        beginChime: ArrayBuffer;
+        endChime: ArrayBuffer;
+        // Computed by the main thread from settings + durationSec +
+        // playbackSpeed; the worker re-derives the per-part target
+        // duration so a stale or malformed value can't escape clamping.
+        targetPartCount: number;
       };
     }
   | {
@@ -153,6 +169,9 @@ export interface ErrorPayload {
   message: string;
   phase: string;
   recoverable: boolean;
+  // Identifies specific error handling paths. "chime-load" gets a Retry
+  // button and is cleared via CLEAR_CHIME_ERROR rather than RESET.
+  source?: "chime-load";
 }
 
 export type WorkerOutMessage =

@@ -11,7 +11,7 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "postinstall": "node scripts/copy-vendor-assets.mjs"
+    "postinstall": "node scripts/copy-vendor-assets.mjs && node scripts/generate-chimes.mjs"
   },
   "dependencies": {
     "@diffusionstudio/piper-wasm": "1.0.0",

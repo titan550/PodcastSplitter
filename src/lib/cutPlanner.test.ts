@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { planCuts, planCutsFromChapters } from "./cutPlanner";
+import {
+  findBestCut,
+  planCuts,
+  planCutsByCount,
+  planCutsFromChapters,
+} from "./cutPlanner";
 import type { Chapter, SilenceInterval } from "../types";
 
 // Keep assertions terse: default target = 300, speed = 1, no silences.
@@ -318,5 +323,116 @@ describe("planCutsFromChapters", () => {
     const cuts = plan([{ title: "Fast", start: 0 }], 400, 300, 1.5);
     expect(cuts).toHaveLength(1);
     expect(cuts[0]!.chapter?.part).toBeUndefined();
+  });
+});
+
+describe("findBestCut", () => {
+  it("returns the ideal when no silences in window", () => {
+    expect(findBestCut(300, [])).toBe(300);
+    expect(findBestCut(300, [{ start: 10, end: 12 }])).toBe(300);
+  });
+
+  it("snaps to midpoint of a silence fully inside the window", () => {
+    expect(findBestCut(300, [{ start: 295, end: 297 }])).toBe(296);
+  });
+
+  it("clamps when a long silence straddles windowEnd (regression)", () => {
+    // silence [319, 340] overlaps the window [280, 320] but its raw
+    // midpoint (329.5) is outside the window. The fix intersects the
+    // silence with the window first, so the returned cut stays inside.
+    const cut = findBestCut(300, [{ start: 319, end: 340 }]);
+    expect(cut).toBeGreaterThanOrEqual(280);
+    expect(cut).toBeLessThanOrEqual(320);
+    // Intersection is [319, 320]; midpoint 319.5.
+    expect(cut).toBeCloseTo(319.5, 5);
+  });
+
+  it("clamps when a long silence straddles windowStart", () => {
+    // silence [260, 340] overlaps the window; intersection is the
+    // entire window [280, 320]; midpoint is the ideal.
+    const cut = findBestCut(300, [{ start: 260, end: 340 }]);
+    expect(cut).toBe(300);
+  });
+
+  it("respects a custom graceSec", () => {
+    // With grace=5, silence [280, 282] is outside the tight window [295, 305].
+    expect(findBestCut(300, [{ start: 280, end: 282 }], 5)).toBe(300);
+    expect(findBestCut(300, [{ start: 298, end: 302 }], 5)).toBe(300);
+  });
+});
+
+describe("planCutsByCount", () => {
+  it("produces exactly N equal segments with no silences", () => {
+    const cuts = planCutsByCount(1000, 5, []);
+    expect(cuts).toHaveLength(5);
+    expect(cuts.map((c) => [c.startSec, c.endSec])).toEqual([
+      [0, 200],
+      [200, 400],
+      [400, 600],
+      [600, 800],
+      [800, 1000],
+    ]);
+    cuts.forEach((c, i) => expect(c.partIndex).toBe(i));
+  });
+
+  it("N=1 returns a single segment covering the full duration", () => {
+    expect(planCutsByCount(500, 1, [])).toEqual([
+      { startSec: 0, endSec: 500, partIndex: 0 },
+    ]);
+  });
+
+  it("N=0 treated as single segment", () => {
+    const cuts = planCutsByCount(500, 0, []);
+    expect(cuts).toHaveLength(1);
+  });
+
+  it("snaps boundaries to silences within the (scaled) grace window", () => {
+    // total=1000, N=5 → segLen=200, graceWindow=min(20, 60) = 20.
+    // Silence at 198-200 is inside the window around the first cut (200).
+    const cuts = planCutsByCount(1000, 5, [{ start: 198, end: 200 }]);
+    expect(cuts).toHaveLength(5);
+    expect(cuts[0]!.endSec).toBe(199);
+    expect(cuts[1]!.startSec).toBe(199);
+  });
+
+  it("silence straddling a boundary never produces a cut outside its window", () => {
+    // Would previously have returned a cut far past the segment boundary.
+    const cuts = planCutsByCount(1000, 5, [{ start: 215, end: 260 }]);
+    expect(cuts).toHaveLength(5);
+    expect(cuts[0]!.endSec).toBeLessThanOrEqual(220);
+  });
+
+  it("does not merge the trailing segment (count is the contract)", () => {
+    // 305 / 3 ≈ 101.67 — no silence pressure; exact-count contract.
+    const cuts = planCutsByCount(305, 3, []);
+    expect(cuts).toHaveLength(3);
+  });
+
+  it("produces strictly monotonic, gap-free, covering cuts", () => {
+    const cuts = planCutsByCount(
+      1000,
+      5,
+      [
+        { start: 190, end: 220 }, // straddles 200
+        { start: 390, end: 420 }, // straddles 400
+        { start: 790, end: 820 }, // straddles 800
+      ],
+    );
+    expect(cuts).toHaveLength(5);
+    expect(cuts[0]!.startSec).toBe(0);
+    expect(cuts[cuts.length - 1]!.endSec).toBe(1000);
+    for (let i = 1; i < cuts.length; i++) {
+      expect(cuts[i]!.startSec).toBe(cuts[i - 1]!.endSec);
+      expect(cuts[i]!.startSec).toBeGreaterThan(cuts[i - 1]!.startSec);
+    }
+  });
+
+  it("grace window scales with segment length so windows cannot overlap", () => {
+    // segLen=40 → graceWindow=12 (30% of 40). A silence that would reach
+    // past a scaled window cap must not pull cut 1 into cut 2's territory.
+    const cuts = planCutsByCount(200, 5, [{ start: 38, end: 90 }]);
+    expect(cuts).toHaveLength(5);
+    expect(cuts[0]!.endSec).toBeLessThan(cuts[1]!.endSec);
+    expect(cuts[0]!.endSec).toBeLessThanOrEqual(52); // ideal (40) + grace cap (12)
   });
 });
