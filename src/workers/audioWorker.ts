@@ -138,8 +138,12 @@ async function runPipeline(
       `Invalid part count ${targetPartCount} (valid range 1..${maxParts})`,
     );
   }
-  const derivedTargetSec =
-    totalDuration / settings.playbackSpeed / targetPartCount;
+  // Chapter-mode subdivision target. Reads maxChapterPartMin directly so
+  // the worker passes the same value to planCutsFromChapters that the UI
+  // estimate (SettingsForm.tsx estimatedParts) does — no rounding drift
+  // through targetPartCount.
+  const chapterTargetSec = settings.maxChapterPartMin * 60;
+  const subdivide = settings.subdivideLongChapters;
 
   const parallelism = settings.parallelEncoding;
 
@@ -167,8 +171,9 @@ async function runPipeline(
     anyChapterWillSubdivide(
       chapters,
       totalDuration,
-      derivedTargetSec,
+      chapterTargetSec,
       settings.playbackSpeed,
+      subdivide,
     );
 
   let silences: SilenceInterval[] = [];
@@ -197,9 +202,10 @@ async function runPipeline(
     cuts = planCutsFromChapters(
       chapters,
       totalDuration,
-      derivedTargetSec,
+      chapterTargetSec,
       settings.playbackSpeed,
       silences,
+      subdivide,
     );
   } else {
     progress("planning", 0, 0, undefined, "Planning segments...");

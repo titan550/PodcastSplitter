@@ -36,6 +36,10 @@ function isValidValue(key: keyof ProcessingSettings, value: unknown): boolean {
       return typeof value === "number" && value >= 1 && value <= 10;
     case "audioProfile":
       return typeof value === "string" && VALID_AUDIO_PROFILES.includes(value);
+    case "subdivideLongChapters":
+      return typeof value === "boolean";
+    case "maxChapterPartMin":
+      return typeof value === "number" && Number.isInteger(value) && value >= 5 && value <= 60;
     default: {
       // Compile-time exhaustiveness check: if a new field is added to
       // ProcessingSettings but not handled above, this line errors.

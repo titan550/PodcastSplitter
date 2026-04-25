@@ -1,9 +1,9 @@
 // --- Processing settings ---
 
 export interface ProcessingSettings {
-  // Desired number of output parts. Time mode honors this exactly; chapter
-  // mode uses it to derive a per-chapter max duration (chapter count can
-  // still dominate the final count).
+  // Time mode only: desired number of output parts (honored exactly).
+  // Chapter mode uses maxChapterPartMin instead; this field is unused
+  // there.
   targetPartCount: number;
   podcastTitle: string;
   playbackSpeed: number;
@@ -30,6 +30,15 @@ export interface ProcessingSettings {
   // "source" preserves source sample rate + channel layout (default).
   // "voice" forces 22.05 kHz mono for sports-headphone use.
   audioProfile: "source" | "voice";
+  // Chapter mode only. When false (default), each chapter becomes one
+  // part regardless of length. When true, chapters longer than
+  // maxChapterPartMin × 1.10 split into sub-parts of about that length.
+  subdivideLongChapters: boolean;
+  // Chapter-mode subdivision target (minutes of *output* per part). The
+  // planner allows ~10% overrun before subdividing so a chapter only
+  // slightly over the target stays as one part. Ignored when
+  // subdivideLongChapters is false.
+  maxChapterPartMin: number;
 }
 
 export const DEFAULT_SETTINGS: ProcessingSettings = {
@@ -46,6 +55,8 @@ export const DEFAULT_SETTINGS: ProcessingSettings = {
   skipLongSilences: false,
   skipLongSilenceMinSec: 3,
   audioProfile: "source",
+  subdivideLongChapters: false,
+  maxChapterPartMin: 10,
 };
 
 // --- Metadata ---

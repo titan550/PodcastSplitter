@@ -112,7 +112,9 @@ export function anyChapterWillSubdivide(
   totalDurationSec: number,
   targetPartSec: number,
   playbackSpeed: number,
+  subdivide: boolean = true,
 ): boolean {
+  if (!subdivide) return false;
   if (chapters.length === 0) return false;
   const sorted = normalizeChapters(chapters);
   const ceiling = targetPartSec * CHAPTER_TOLERANCE;
@@ -155,6 +157,7 @@ export function planCutsFromChapters(
   targetPartSec: number,
   playbackSpeed: number,
   silences: SilenceInterval[],
+  subdivide: boolean = true,
 ): CutPoint[] {
   if (chapters.length === 0) return [];
   const sorted = normalizeChapters(chapters);
@@ -186,7 +189,7 @@ export function planCutsFromChapters(
     const windowLen = win.end - win.start;
     const outputDuration = windowLen / playbackSpeed;
 
-    if (outputDuration <= ceiling) {
+    if (!subdivide || outputDuration <= ceiling) {
       cuts.push({
         startSec: win.start,
         endSec: win.end,

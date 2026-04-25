@@ -59,25 +59,28 @@ export function SettingsForm({
   // subdivision (long chapters split by the target ceiling). Memoized
   // because a 100+ chapter audiobook would otherwise re-sort + re-plan
   // on every slider-drag render.
+  //
+  // The targetSec passed here MUST match what audioWorker.ts passes to
+  // planCutsFromChapters — both compute `settings.maxChapterPartMin * 60`
+  // literally so the UI estimate stays in sync with actual output.
   const estimatedParts = useMemo(() => {
-    if (useChapterMode) {
-      const targetSec = listeningDurationSec / parts;
-      return planCutsFromChapters(
-        chapters,
-        durationSec,
-        targetSec,
-        settings.playbackSpeed,
-        [],
-      ).length;
-    }
-    return parts; // planCutsByCount guarantees exactly this many
+    if (!useChapterMode) return parts; // planCutsByCount guarantees exactly this many
+    return planCutsFromChapters(
+      chapters,
+      durationSec,
+      settings.maxChapterPartMin * 60,
+      settings.playbackSpeed,
+      [],
+      settings.subdivideLongChapters,
+    ).length;
   }, [
     useChapterMode,
     chapters,
     durationSec,
-    listeningDurationSec,
     parts,
+    settings.maxChapterPartMin,
     settings.playbackSpeed,
+    settings.subdivideLongChapters,
   ]);
 
   return (
@@ -85,11 +88,7 @@ export function SettingsForm({
       <div className="settings-form__info">
         <span>Duration: {formatDuration(durationSec)}</span>
         <span>Size: {fileSizeMB.toFixed(1)} MB</span>
-        <span>
-          {useChapterMode && estimatedParts !== parts
-            ? `Requested ${parts} · Estimated ${estimatedParts} parts`
-            : `~${estimatedParts} parts`}
-        </span>
+        <span>~{estimatedParts} parts</span>
       </div>
 
       <label className="settings-form__field">
@@ -147,25 +146,57 @@ export function SettingsForm({
         </div>
       )}
 
-      <label className="settings-form__field">
-        <span>
-          Number of parts: {parts} (~{minutesEach} min of content each)
-        </span>
-        <input
-          type="range"
-          min={1}
-          max={Math.max(1, maxParts)}
-          step={1}
-          value={parts}
-          onChange={(e) =>
-            onChange({ targetPartCount: Number(e.target.value) })
-          }
-        />
-        <small className="settings-form__hint">
-          Displayed duration is content only; final files are slightly longer due to chimes and announcements.
-          {useChapterMode && " Chapter mode may produce more parts than requested if there are more chapters."}
-        </small>
-      </label>
+      {useChapterMode ? (
+        <>
+          <label className="settings-form__field settings-form__toggle">
+            <input
+              type="checkbox"
+              checked={settings.subdivideLongChapters}
+              onChange={(e) =>
+                onChange({ subdivideLongChapters: e.target.checked })
+              }
+            />
+            <span>Subdivide long chapters into smaller parts</span>
+          </label>
+          {settings.subdivideLongChapters && (
+            <label className="settings-form__field">
+              <span>Target part length: {settings.maxChapterPartMin} min</span>
+              <input
+                type="range"
+                min={5}
+                max={60}
+                step={1}
+                value={settings.maxChapterPartMin}
+                onChange={(e) =>
+                  onChange({ maxChapterPartMin: Number(e.target.value) })
+                }
+              />
+              <small className="settings-form__hint">
+                Chapters longer than about this split into sub-parts of about this length. Shorter chapters stay as one part.
+              </small>
+            </label>
+          )}
+        </>
+      ) : (
+        <label className="settings-form__field">
+          <span>
+            Number of parts: {parts} (~{minutesEach} min of content each)
+          </span>
+          <input
+            type="range"
+            min={1}
+            max={Math.max(1, maxParts)}
+            step={1}
+            value={parts}
+            onChange={(e) =>
+              onChange({ targetPartCount: Number(e.target.value) })
+            }
+          />
+          <small className="settings-form__hint">
+            Final files are slightly longer than shown due to chimes and announcements.
+          </small>
+        </label>
+      )}
 
       <label className="settings-form__field">
         <span>Playback speed: {settings.playbackSpeed.toFixed(2)}x</span>

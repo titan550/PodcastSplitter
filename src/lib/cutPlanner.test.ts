@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  anyChapterWillSubdivide,
   findBestCut,
   planCuts,
   planCutsByCount,
@@ -324,6 +325,34 @@ describe("planCutsFromChapters", () => {
     expect(cuts).toHaveLength(1);
     expect(cuts[0]!.chapter?.part).toBeUndefined();
   });
+
+  it("subdivide=false keeps long chapters as one part", () => {
+    // 900 s chapter would normally split into 3, but with subdivide=false
+    // it stays as one part.
+    const cuts = planCutsFromChapters(
+      [{ title: "Long", start: 0 }],
+      900,
+      300,
+      1,
+      [],
+      false,
+    );
+    expect(cuts).toHaveLength(1);
+    expect(cuts[0]!.chapter?.part).toBeUndefined();
+  });
+
+  it("subdivides a 14-min chapter at 10-min target (covers 1.10 ceiling boundary)", () => {
+    // 840 s output > 660 s ceiling (= 600 * 1.10) → subdivides.
+    const cuts = planCutsFromChapters(
+      [{ title: "Long", start: 0 }],
+      14 * 60,
+      10 * 60,
+      1,
+      [],
+      true,
+    );
+    expect(cuts.length).toBeGreaterThan(1);
+  });
 });
 
 describe("findBestCut", () => {
@@ -358,6 +387,20 @@ describe("findBestCut", () => {
     // With grace=5, silence [280, 282] is outside the tight window [295, 305].
     expect(findBestCut(300, [{ start: 280, end: 282 }], 5)).toBe(300);
     expect(findBestCut(300, [{ start: 298, end: 302 }], 5)).toBe(300);
+  });
+});
+
+describe("anyChapterWillSubdivide", () => {
+  it("returns false when subdivide=false regardless of chapter length", () => {
+    expect(
+      anyChapterWillSubdivide(
+        [{ title: "Long", start: 0 }],
+        900,
+        300,
+        1,
+        false,
+      ),
+    ).toBe(false);
   });
 });
 

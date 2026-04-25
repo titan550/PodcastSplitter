@@ -7,7 +7,7 @@ Static web app that splits a podcast into labeled, speed-adjusted MP3 parts for 
 ## What it does
 
 1. Load an audio file (MP3, M4A, M4B, AAC, WAV, OGG, Opus, FLAC, WebM).
-2. Split by embedded chapters if present, otherwise by time (default 5 min, snapped to nearby silences).
+2. Split by embedded chapters if present (one part per chapter by default; optionally subdivide long ones), otherwise by time using a configurable parts count (snapped to nearby silences).
 3. Prepend a spoken label to each part — `"Part N of {Title}"` or `"Chapter N of {Title}. {Chapter}"` — synthesized locally via Piper TTS.
 4. Speed up the podcast body (default 1.25×), prefix stays at 1×.
 5. Optionally strip long internal silences.
