@@ -52,6 +52,20 @@ function post(msg: WorkerOutMessage): void {
   self.postMessage(msg);
 }
 
+// A worker's unhandled rejection doesn't surface as Worker.onerror, so route it
+// through ERROR (e.g. an async throw in the TTS_RESULT handler). Sync errors
+// already hit worker.onerror — don't also handle "error" or it double-reports.
+self.addEventListener("unhandledrejection", (e) => {
+  post({
+    type: "ERROR",
+    payload: {
+      message: errorMessage((e as PromiseRejectionEvent).reason),
+      phase: currentPhase,
+      recoverable: false,
+    },
+  });
+});
+
 function progress(
   phase: Phase,
   pct: number,
@@ -103,6 +117,11 @@ function computeOverallPct(
     }
     case "zipping":
       return LOAD + ANALYZE + PARTS + (phasePct / 100) * ZIP;
+    default: {
+      // Exhaustiveness guard — a new Phase becomes a compile error here.
+      const _exhaustive: never = phase;
+      return _exhaustive;
+    }
   }
 }
 
@@ -211,6 +230,11 @@ async function runPipeline(
     cuts = planCutsByCount(totalDuration, targetPartCount, silences);
   }
   const totalParts = cuts.length;
+  if (totalParts === 0) {
+    // Chapter data collapsing to no valid windows would otherwise ship an
+    // empty ZIP as a successful job.
+    throw new Error("No parts to encode — the audio produced no valid segments");
+  }
   progress(
     "planning",
     100,

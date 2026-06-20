@@ -92,8 +92,10 @@ function reducer(state: JobState, action: JobAction): JobState {
             settings.playbackSpeed,
           ),
         };
-        legacyTargetPartDurationSec = null;
       }
+      // Always clear the one-shot legacy flag on file-select — leaving it set
+      // disables the auto-save effect for the rest of the session.
+      legacyTargetPartDurationSec = null;
 
       return {
         ...state,

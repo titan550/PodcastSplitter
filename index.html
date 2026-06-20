@@ -15,7 +15,14 @@
         navigator.serviceWorker
           .register("%BASE_URL%coi-sw.js")
           .then((reg) => {
-            if (reg.active && !navigator.serviceWorker.controller) {
+            if (
+              reg.active &&
+              !navigator.serviceWorker.controller &&
+              !sessionStorage.getItem("coiReloaded")
+            ) {
+              // Reload once so the new worker controls this page; the flag
+              // prevents an infinite reload loop if it never becomes controller.
+              sessionStorage.setItem("coiReloaded", "1");
               window.location.reload();
             }
           })

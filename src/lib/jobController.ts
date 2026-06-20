@@ -137,9 +137,11 @@ export class JobController {
   private async drainTTS(): Promise<void> {
     if (this.draining) return;
     this.draining = true;
+    let currentTarget: Worker | null = null;
     try {
       while (this.queue.length > 0) {
         const { id, text, target } = this.queue.shift()!;
+        currentTarget = target;
         const wavBlob = await this.opts.synthesize(text);
         // Drop the result if the targeted worker was replaced meanwhile.
         if (this.worker === target) {
@@ -147,12 +149,16 @@ export class JobController {
         }
       }
     } catch (err) {
-      this.opts.onError({
-        message: errorMessage(err),
-        phase: "tts",
-        recoverable: false,
-      });
-      this.recreate();
+      // Drop a stale rejection if the targeted worker was replaced meanwhile
+      // (mirrors the success-path guard above).
+      if (this.worker === currentTarget) {
+        this.opts.onError({
+          message: errorMessage(err),
+          phase: "tts",
+          recoverable: false,
+        });
+        this.recreate();
+      }
     } finally {
       this.draining = false;
     }

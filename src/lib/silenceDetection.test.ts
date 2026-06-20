@@ -47,4 +47,12 @@ describe("parseSilenceLog", () => {
     ];
     expect(parseSilenceLog(lines)).toEqual([{ start: 0, end: 0.5 }]);
   });
+
+  it("parses a small negative silence_start at the very beginning", () => {
+    const lines = [
+      "[silencedetect @ 0x1] silence_start: -0.001",
+      "[silencedetect @ 0x1] silence_end: 0.42 | silence_duration: 0.421",
+    ];
+    expect(parseSilenceLog(lines)).toEqual([{ start: -0.001, end: 0.42 }]);
+  });
 });

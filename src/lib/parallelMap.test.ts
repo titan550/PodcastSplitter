@@ -107,4 +107,30 @@ describe("runOrderedPool", () => {
       ),
     ).rejects.toThrow("zip failed");
   });
+
+  it("stops sibling workers from claiming new work after a failure", async () => {
+    const itemCount = 12;
+    const started: number[] = [];
+    let failed = false;
+    try {
+      await runOrderedPool(
+        [0, 1], // two workers run concurrently
+        itemCount,
+        async (_w, i) => {
+          started.push(i);
+          if (i === 1) throw new Error("boom"); // second worker fails fast
+          await tick(5);
+          return i;
+        },
+        async () => {},
+      );
+    } catch {
+      failed = true;
+    }
+    // Give any (incorrectly) surviving worker ample time to keep claiming.
+    await tick(50);
+    expect(failed).toBe(true);
+    // The pool aborted: it must not have run all 12 items to completion.
+    expect(started.length).toBeLessThan(itemCount);
+  });
 });

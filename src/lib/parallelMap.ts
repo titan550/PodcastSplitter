@@ -21,7 +21,17 @@ export async function runOrderedPool<W, R>(
   const ready = new Map<number, R>();
   let nextDeliver = 0;
   let cursor = 0;
+  let aborted = false;
+  let firstError: unknown;
   let deliverChain: Promise<void> = Promise.resolve();
+
+  // First failure wins: record it and stop every worker from claiming new work.
+  const abort = (err: unknown): void => {
+    if (!aborted) {
+      aborted = true;
+      firstError = err;
+    }
+  };
 
   const deliverReady = (): Promise<void> => {
     deliverChain = deliverChain.then(async () => {
@@ -36,13 +46,21 @@ export async function runOrderedPool<W, R>(
   };
 
   const runWorker = async (worker: W): Promise<void> => {
-    while (true) {
+    while (!aborted) {
       const index = cursor++;
       if (index >= itemCount) return;
-      ready.set(index, await process(worker, index));
-      await deliverReady();
+      try {
+        ready.set(index, await process(worker, index));
+        await deliverReady();
+      } catch (err) {
+        // Catch per-worker so each settles its own deliverChain; a sibling
+        // chaining onto a rejected chain would orphan an unhandledrejection.
+        abort(err);
+        return;
+      }
     }
   };
 
   await Promise.all(workers.map(runWorker));
+  if (aborted) throw firstError;
 }

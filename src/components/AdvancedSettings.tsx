@@ -17,7 +17,13 @@ export function AdvancedSettings({ settings, capabilities, onChange }: Props) {
     setClearing(true);
     try {
       const result = await clearAllCaches();
-      alert(result.blobCache === "cleared" ? "Caches cleared." : "Failed to clear caches.");
+      const ok =
+        result.blobCache === "cleared" && result.voiceModel === "cleared";
+      alert(
+        ok
+          ? "Cleared the voice model and audio cache. (The FFmpeg and ONNX runtime files stay in the browser's HTTP cache — clear site data to remove those.)"
+          : "Some caches could not be cleared.",
+      );
     } finally {
       setClearing(false);
     }

@@ -108,6 +108,19 @@ describe("planCuts", () => {
     const cuts = planCuts(800, 300, 1.25, silences);
     expect(cuts[0]!.endSec).toBe(371); // snapped to silence midpoint
   });
+
+  it("terminates and stays monotonic when the grace window exceeds the part duration", () => {
+    // Per-part source = 10s, but the fixed 20s grace window reaches behind the
+    // cursor; a silence near the start used to make findBestCut return a point
+    // <= cursor and spin forever. The forward-progress guard must prevent that.
+    const cuts = planCuts(100, 10, 1, [{ start: 2, end: 4 }]);
+    expect(cuts.length).toBeGreaterThan(0);
+    for (let i = 0; i < cuts.length; i++) {
+      expect(cuts[i]!.endSec).toBeGreaterThan(cuts[i]!.startSec); // no zero/negative parts
+      if (i > 0) expect(cuts[i]!.startSec).toBe(cuts[i - 1]!.endSec); // gap-free
+    }
+    expect(cuts[cuts.length - 1]!.endSec).toBe(100); // full coverage
+  });
 });
 
 describe("planCutsFromChapters", () => {

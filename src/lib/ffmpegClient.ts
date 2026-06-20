@@ -68,10 +68,8 @@ export function terminateFFmpeg(): void {
     }
   }
   ffmpegPool.length = 0;
-  if (classWorkerURLCached) {
-    URL.revokeObjectURL(classWorkerURLCached);
-    classWorkerURLCached = null;
-  }
+  // Don't revoke classWorkerURLCached — it's reused across jobs and freed when
+  // the worker terminates.
 }
 
 /**
@@ -81,7 +79,14 @@ export async function encodePart(
   ff: FFmpeg,
   opts: EncodeArgsInput,
 ): Promise<void> {
-  await ff.exec(buildEncodeArgs(opts));
+  // ff.exec returns ffmpeg's exit code and does NOT reject on failure — throw
+  // so a failed encode doesn't ship an empty MP3 as success.
+  const code = await ff.exec(buildEncodeArgs(opts));
+  if (code !== 0) {
+    throw new Error(
+      `ffmpeg encode failed (exit code ${code}) for ${opts.outputFile}`,
+    );
+  }
 }
 
 export async function cleanupFiles(

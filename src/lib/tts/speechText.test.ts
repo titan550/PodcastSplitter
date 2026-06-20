@@ -40,6 +40,33 @@ describe("buildSpeechText (time mode)", () => {
       }),
     ).toBe("Part 13 of 13. Show. Minutes 75 to 80.");
   });
+
+  it("never announces a degenerate range for a sub-minute part", () => {
+    // start and end floor to the same minute — must still read forward.
+    expect(
+      buildSpeechText({
+        kind: "time",
+        partIndex: 0,
+        totalParts: 1,
+        podcastTitle: "Short",
+        startSec: 12,
+        endSec: 48,
+      }),
+    ).toBe("Part 1 of 1. Short. Minutes 0 to 1.");
+  });
+
+  it("bumps the end minute when a part stays within one minute", () => {
+    expect(
+      buildSpeechText({
+        kind: "time",
+        partIndex: 1,
+        totalParts: 3,
+        podcastTitle: "Show",
+        startSec: 70,
+        endSec: 110,
+      }),
+    ).toBe("Part 2 of 3. Show. Minutes 1 to 2.");
+  });
 });
 
 describe("buildSpeechText (chapter mode, un-subdivided)", () => {

@@ -1,8 +1,10 @@
 import type { FFmpeg } from "@ffmpeg/ffmpeg";
 import type { SilenceInterval } from "../types";
 
-const START_RE = /silence_start:\s*([\d.]+)/;
-const END_RE = /silence_end:\s*([\d.]+)/;
+// Allow a leading minus: silencedetect can emit a small negative silence_start
+// (filter latency) at the very start of a stream.
+const START_RE = /silence_start:\s*(-?[\d.]+)/;
+const END_RE = /silence_end:\s*(-?[\d.]+)/;
 
 export function parseSilenceLog(lines: string[]): SilenceInterval[] {
   const silences: SilenceInterval[] = [];

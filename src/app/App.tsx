@@ -32,6 +32,9 @@ export function App() {
   // download updates once the job has started.
   const statusRef = useRef(state.status);
   statusRef.current = state.status;
+  // Re-entrancy guard: a double-clicked Start would launch two jobs sharing
+  // module-global ffmpeg/zip state.
+  const jobActiveRef = useRef(false);
 
   // Chime audio. Fetched once on mount, then copied (slice(0)) into every
   // START_JOB payload so multiple jobs in the same session still work.
@@ -54,7 +57,7 @@ export function App() {
   // Idempotent TTS init. Returns existing promise if in-flight or complete.
   const initTTS = useCallback((settings: ProcessingSettings): Promise<void> => {
     if (ttsInitPromiseRef.current) return ttsInitPromiseRef.current;
-    ttsInitPromiseRef.current = (async () => {
+    const p = (async () => {
       const { PiperEngine } = await import("../lib/tts/PiperEngine");
       ttsEngineRef.current = new PiperEngine(settings.voiceId);
       await ttsEngineRef.current.init((pct) => {
@@ -71,7 +74,15 @@ export function App() {
         });
       });
     })();
-    return ttsInitPromiseRef.current;
+    // Drop the memo on failure so a later attempt can retry the download.
+    p.catch(() => {
+      if (ttsInitPromiseRef.current === p) {
+        ttsInitPromiseRef.current = null;
+        ttsEngineRef.current = null;
+      }
+    });
+    ttsInitPromiseRef.current = p;
+    return p;
   }, [dispatch]);
 
   // Preload the TTS voice model on mount so it downloads while the user
@@ -132,6 +143,21 @@ export function App() {
     wakeLockRef.current = null;
   }, []);
 
+  // The browser auto-releases the wake lock when the page is hidden;
+  // re-acquire on return-to-visible if a job is still running.
+  useEffect(() => {
+    const onVisible = () => {
+      if (
+        document.visibilityState === "visible" &&
+        statusRef.current === "processing"
+      ) {
+        void requestWakeLock();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [requestWakeLock]);
+
   // Bridge the worker's TTS requests to main-thread Piper synthesis. Reads
   // refs, so it stays stable across renders.
   const synthesize = useCallback(async (text: string): Promise<Blob> => {
@@ -168,6 +194,11 @@ export function App() {
     async (file: File) => {
       try {
         const meta = await extractMetadata(file);
+        if (!(meta.durationSec > 0)) {
+          // music-metadata may "parse" a corrupt file without throwing,
+          // yielding duration 0 — reject early (the catch shows the message).
+          throw new Error("audio has no usable duration");
+        }
         durationRef.current = meta.durationSec;
         dispatch({
           type: "FILE_SELECTED",
@@ -205,8 +236,10 @@ export function App() {
   );
 
   const handleStart = useCallback(() => {
+    if (jobActiveRef.current) return; // re-entrancy guard: ignore double-clicks
     if (!state.file || !state.sourceMetadata) return;
     if (!beginChimeRef.current || !endChimeRef.current) return;
+    jobActiveRef.current = true;
     dispatch({ type: "START" });
     requestWakeLock();
 
@@ -265,7 +298,10 @@ export function App() {
     initTTS,
   ]);
 
-  const handleCancel = useCallback(() => {
+  // Single teardown path (cancel / dismiss-error / process-another): terminate
+  // the worker so an abandoned job can't later auto-download onto a reset UI.
+  const handleReset = useCallback(() => {
+    jobActiveRef.current = false;
     controllerRef.current?.cancel();
     releaseWakeLock();
     dispatch({ type: "RESET" });
@@ -284,7 +320,8 @@ export function App() {
     a.click();
     setTimeout(() => {
       URL.revokeObjectURL(url);
-      document.body.removeChild(a);
+      // .remove() won't throw if the node is already gone, unlike removeChild.
+      a.remove();
     }, 5000);
   }, [state.zipBlob, state.settings.podcastTitle]);
 
@@ -323,9 +360,7 @@ export function App() {
         <ErrorBanner
           error={state.error}
           onRetry={isChimeError ? () => void loadChimes() : undefined}
-          onDismiss={
-            isChimeError ? undefined : () => dispatch({ type: "RESET" })
-          }
+          onDismiss={isChimeError ? undefined : handleReset}
         />
       )}
 
@@ -365,7 +400,7 @@ export function App() {
         {state.status === "processing" && (
           <ProgressPanel
             progress={state.progress}
-            onCancel={handleCancel}
+            onCancel={handleReset}
           />
         )}
 
@@ -380,7 +415,7 @@ export function App() {
             </button>
             <button
               className="btn btn--secondary"
-              onClick={() => dispatch({ type: "RESET" })}
+              onClick={handleReset}
             >
               Process another file
             </button>

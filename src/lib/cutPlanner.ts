@@ -36,13 +36,16 @@ export function planCuts(
     }
 
     const cutAt = findBestCut(idealEnd, silences);
+    // Guarantee forward progress: findBestCut can return a point <= cursor
+    // (grace window > part duration), so fall back to idealEnd (always ahead).
+    const nextCut = cutAt > cursor ? cutAt : idealEnd;
 
     cuts.push({
       startSec: cursor,
-      endSec: cutAt,
+      endSec: nextCut,
       partIndex: cuts.length,
     });
-    cursor = cutAt;
+    cursor = nextCut;
   }
 
   // Merge trailing segment if too short after speed-up

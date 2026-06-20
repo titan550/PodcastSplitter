@@ -56,7 +56,9 @@ export function buildSpeechText(args: SpeechTextArgs): string {
   }
 
   const startMin = Math.floor(args.startSec / 60);
-  const endMin = Math.floor(args.endSec / 60);
+  // Floor both ends, but bump endMin so a sub-minute part never reads
+  // "Minutes 6 to 6".
+  const endMin = Math.max(Math.floor(args.endSec / 60), startMin + 1);
   return `${partHeader}. ${args.podcastTitle}. Minutes ${startMin} to ${endMin}.`;
 }
 

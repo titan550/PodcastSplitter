@@ -122,6 +122,13 @@ describe("truncateFilename", () => {
     const name = "z".repeat(200);
     expect(truncateFilename(name, 100)).toHaveLength(100);
   });
+
+  it("never exceeds maxLen even when the extension is longer than maxLen", () => {
+    // A negative slice budget used to count from the end and overrun the cap.
+    const name = "a".repeat(50) + ".verylongextension";
+    const out = truncateFilename(name, 10);
+    expect(out.length).toBeLessThanOrEqual(10);
+  });
 });
 
 describe("partFilename (time mode)", () => {

@@ -168,6 +168,25 @@ describe("JobController", () => {
     expect(workers).toHaveLength(2);
   });
 
+  it("drops a stale synthesis failure after the worker is recreated", async () => {
+    let rejectSynth!: (e: unknown) => void;
+    const { controller, workers, errors } = setup(
+      () => new Promise<Blob>((_res, rej) => (rejectSynth = rej)),
+    );
+    workers[0]!.emit({ type: "REQUEST_TTS", payload: { id: 1, text: "a" } });
+    await tick(); // synthesis is now in flight for worker 0
+
+    controller.cancel(); // terminate worker 0, spawn worker 1
+    rejectSynth(new Error("late failure")); // old synthesis rejects after cancel
+    await tick();
+
+    // The stale failure belongs to a job the user already cancelled: it must
+    // not surface as an error (which would clobber the reset state) nor spawn
+    // a third worker.
+    expect(errors).toEqual([]);
+    expect(workers).toHaveLength(2);
+  });
+
   it("dispose() terminates the worker without spawning a replacement", () => {
     const { controller, workers } = setup();
     controller.dispose();

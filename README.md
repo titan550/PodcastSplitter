@@ -34,7 +34,7 @@ The app needs `crossOriginIsolated` for `SharedArrayBuffer` (ffmpeg + ORT thread
 - **All WASM self-hosted** under `/ffmpeg/`, `/ort/`, `/piper/` (COEP forbids cross-origin loads). Paths resolve through `src/lib/assetUrl.ts` so both root and subpath deploys work.
 - **Parallel encoding** — a pool of ffmpeg workers pulls from a shared cursor; a promise-chain mutex guarantees ZIP entries are written in strict part order.
 - **TTS pipelining** — the audio worker fires all TTS requests upfront; main-thread Piper synthesizes serially while ffmpeg encodes in parallel, with a target-worker tag to discard stale results after cancel.
-- **Why Piper, not `speechSynthesis`** — the Web Speech API can't export audio to a file, and each prefix has to be muxed into its MP3. Piper produces 22050 Hz mono WAV (~17 MB voice model, cached in OPFS).
+- **Why Piper, not `speechSynthesis`** — the Web Speech API can't export audio to a file, and each prefix has to be muxed into its MP3. Piper produces 22050 Hz mono WAV (~63 MB voice model, fetched once from huggingface.co then cached in OPFS — only the model is downloaded, never your audio).
 
 ### Caching
 
@@ -45,7 +45,7 @@ The app needs `crossOriginIsolated` for `SharedArrayBuffer` (ffmpeg + ORT thread
 | Generated prefix audio | IndexedDB, keyed by text + voice |
 | User settings | localStorage |
 
-First load pulls ~50 MB total (ffmpeg ~25, ORT ~8, voice ~17); everything is cached after.
+First load pulls ~96 MB total (ffmpeg ~25, ORT ~8, voice ~63); everything is cached after.
 
 ## Mobile notes
 

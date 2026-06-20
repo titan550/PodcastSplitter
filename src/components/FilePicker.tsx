@@ -37,6 +37,8 @@ export function FilePicker({ isMobile, onFileSelected }: Props) {
   const handleInput = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
+      // Reset value so re-selecting the same file still fires onChange.
+      e.target.value = "";
       if (file) handleFile(file);
     },
     [handleFile],
@@ -55,6 +57,9 @@ export function FilePicker({ isMobile, onFileSelected }: Props) {
   return (
     <div
       className={`file-picker ${dragging ? "file-picker--dragging" : ""}`}
+      role="button"
+      tabIndex={0}
+      aria-label="Choose an audio file to split"
       onDragOver={(e) => {
         e.preventDefault();
         setDragging(true);
@@ -62,6 +67,13 @@ export function FilePicker({ isMobile, onFileSelected }: Props) {
       onDragLeave={() => setDragging(false)}
       onDrop={handleDrop}
       onClick={() => inputRef.current?.click()}
+      onKeyDown={(e) => {
+        // Keyboard a11y: the drop zone is the only file control (input hidden).
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          inputRef.current?.click();
+        }
+      }}
     >
       <input
         ref={inputRef}

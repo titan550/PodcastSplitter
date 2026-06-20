@@ -63,6 +63,9 @@ export function truncateFilename(name: string, maxLen = MAX_FILENAME): string {
   if (name.length <= maxLen) return name;
   const ext = splitExt(name);
   const stem = ext ? name.slice(0, -ext.length) : name;
+  // Extension alone exceeds budget — hard-cut, else slice(0, negative) would
+  // overrun the cap.
+  if (ext.length >= maxLen) return name.slice(0, maxLen);
   return stem.slice(0, maxLen - ext.length) + ext;
 }
 
