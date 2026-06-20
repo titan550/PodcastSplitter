@@ -1,4 +1,11 @@
-import type { Chapter, CutPoint, SilenceInterval } from "../types";
+import type {
+  Chapter,
+  CutPoint,
+  ProcessingSettings,
+  SilenceInterval,
+  SplitMode,
+} from "../types";
+import { clampPartCount } from "./partCount";
 
 const GRACE_WINDOW_SEC = 20;
 const MIN_TRAILING_SEC = 30;
@@ -101,6 +108,29 @@ function normalizeChapters(chapters: Chapter[]): Chapter[] {
   return sorted;
 }
 
+interface ChapterWindow {
+  title: string;
+  start: number;
+  end: number;
+}
+
+/** Build gap-free [start, end] windows from chapters: ends derive from the
+ *  next chapter's start (last → file end). Parser-supplied `end` fields are
+ *  ignored (they can gap/overlap) and zero-length windows are dropped. */
+function chapterWindows(
+  chapters: Chapter[],
+  totalDurationSec: number,
+): ChapterWindow[] {
+  const sorted = normalizeChapters(chapters);
+  const windows: ChapterWindow[] = [];
+  for (let i = 0; i < sorted.length; i++) {
+    const start = sorted[i]!.start;
+    const end = i + 1 < sorted.length ? sorted[i + 1]!.start : totalDurationSec;
+    if (end > start) windows.push({ title: sorted[i]!.title, start, end });
+  }
+  return windows;
+}
+
 /**
  * Cheap O(chapters) predicate that mirrors the subdivision test inside
  * `planCutsFromChapters` without running the planner. Used by the worker
@@ -114,42 +144,22 @@ export function anyChapterWillSubdivide(
   playbackSpeed: number,
   subdivide: boolean = true,
 ): boolean {
-  if (!subdivide) return false;
-  if (chapters.length === 0) return false;
-  const sorted = normalizeChapters(chapters);
+  if (!subdivide || chapters.length === 0) return false;
   const ceiling = targetPartSec * CHAPTER_TOLERANCE;
-  for (let i = 0; i < sorted.length; i++) {
-    const startSec = sorted[i]!.start;
-    const endSec =
-      i + 1 < sorted.length ? sorted[i + 1]!.start : totalDurationSec;
-    if (endSec <= startSec) continue;
-    if ((endSec - startSec) / playbackSpeed > ceiling) return true;
-  }
-  return false;
+  return chapterWindows(chapters, totalDurationSec).some(
+    (w) => (w.end - w.start) / playbackSpeed > ceiling,
+  );
 }
 
 /**
- * Plans cuts directly from parsed MP3/M4B chapters. Guarantees ordered,
- * gap-free coverage from 0 to totalDurationSec:
- *
- *  1. Sorts by start — parsers don't guarantee chronological order.
- *  2. If the first chapter starts > 1 s in, prepends a synthetic "Intro"
- *     chapter from 0 so leading ads / cold-open audio isn't silently lost.
- *  3. Each chapter's endSec is derived from the next chapter's start (the
- *     last chapter runs to totalDurationSec). Parser-supplied `end` fields
- *     are intentionally ignored — they can leave gaps or overlap.
- *  4. Zero-length segments are dropped, so a chapter at the exact file end
- *     doesn't produce an empty part.
- *  5. Chapters whose output duration (accounting for playbackSpeed) exceeds
- *     targetPartSec * CHAPTER_TOLERANCE are subdivided: the shared silence
- *     list is filtered + rebased into the chapter's window and fed to
- *     planCuts, whose returned sub-cuts are offset back to absolute time.
- *     Sub-parts carry chapterPartIndex/chapterPartCount so downstream code
- *     can format them distinctly.
- *
- * All chapter-mode cuts carry chapterNumber + totalChapters (post-Intro-
- * prepend) so speech text and filenames refer to the true chapter ordinal
- * instead of the global partIndex.
+ * Plan cuts directly from parsed chapters, with ordered gap-free coverage
+ * of [0, totalDurationSec] (boundary rules live in chapterWindows).
+ * Chapters whose output duration exceeds targetPartSec * CHAPTER_TOLERANCE
+ * are subdivided via planCuts — the shared silence list is filtered and
+ * rebased into the chapter window, then sub-cuts are offset back to
+ * absolute time and tagged with part.index/count. Every cut carries the
+ * chapter number + totalChapters (post-Intro-prepend) so speech text and
+ * filenames use the true chapter ordinal, not the global partIndex.
  */
 export function planCutsFromChapters(
   chapters: Chapter[],
@@ -160,20 +170,7 @@ export function planCutsFromChapters(
   subdivide: boolean = true,
 ): CutPoint[] {
   if (chapters.length === 0) return [];
-  const sorted = normalizeChapters(chapters);
-
-  // Build [start, end] windows first so totalChapters can exclude any
-  // zero-length segments dropped below (a trailing chapter at exact file
-  // end, etc.).
-  const windows: { title: string; start: number; end: number }[] = [];
-  for (let i = 0; i < sorted.length; i++) {
-    const startSec = sorted[i]!.start;
-    const endSec =
-      i + 1 < sorted.length ? sorted[i + 1]!.start : totalDurationSec;
-    if (endSec > startSec) {
-      windows.push({ title: sorted[i]!.title, start: startSec, end: endSec });
-    }
-  }
+  const windows = chapterWindows(chapters, totalDurationSec);
 
   const totalChapters = windows.length;
   const cuts: CutPoint[] = [];
@@ -235,16 +232,10 @@ export function planCutsFromChapters(
 }
 
 /**
- * Return the best cut point near `idealEnd` by intersecting candidate
- * silences with the grace window and scoring their midpoints. The result
- * is always in `[idealEnd - graceSec, idealEnd + graceSec]` — critical
- * for the exact-count planner, where monotonicity of successive cuts
- * depends on cut points not escaping their segment's grace window.
- *
- * Exported so the regression test can target it directly (a previous
- * version filtered by `silence.start` inside the window but returned the
- * full silence midpoint, which could land far outside the window when a
- * long silence straddled the edge).
+ * Best cut point near `idealEnd`: intersect candidate silences with the
+ * grace window and score their midpoints. The result is always within
+ * `[idealEnd - graceSec, idealEnd + graceSec]` — the exact-count planner's
+ * monotonicity depends on cuts not escaping their segment's window.
  */
 export function findBestCut(
   idealEnd: number,
@@ -279,4 +270,39 @@ export function findBestCut(
   }
 
   return bestMid;
+}
+
+/**
+ * Estimate the output part count for the given settings, matching what the
+ * worker will produce. Time mode is exactly the clamped part count; chapter
+ * mode dry-runs the planner so the estimate reflects subdivision. Keeps the
+ * UI estimate from re-deriving the worker's planning inputs by hand.
+ */
+export function estimatePartCount(
+  splitMode: SplitMode,
+  chapters: Chapter[],
+  durationSec: number,
+  settings: Pick<
+    ProcessingSettings,
+    | "targetPartCount"
+    | "playbackSpeed"
+    | "maxChapterPartMin"
+    | "subdivideLongChapters"
+  >,
+): number {
+  if (splitMode !== "chapters" || chapters.length < 2) {
+    return clampPartCount(
+      settings.targetPartCount,
+      durationSec,
+      settings.playbackSpeed,
+    );
+  }
+  return planCutsFromChapters(
+    chapters,
+    durationSec,
+    settings.maxChapterPartMin * 60,
+    settings.playbackSpeed,
+    [],
+    settings.subdivideLongChapters,
+  ).length;
 }

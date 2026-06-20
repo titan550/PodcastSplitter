@@ -40,13 +40,8 @@ const MP3_RATES = [
  * rejects anything below).
  */
 export function clampToMp3Rate(rate: number): number {
-  return Math.max(
-    8000,
-    MP3_RATES.reduce(
-      (best, r) => (r <= rate && r > best ? r : best),
-      0,
-    ),
-  );
+  const supported = MP3_RATES.filter((r) => r <= rate);
+  return supported.length ? Math.max(...supported) : 8000;
 }
 
 /**
@@ -134,7 +129,7 @@ export function buildEncodeArgs(input: EncodeArgsInput): string[] {
 
   const args: string[] = [];
 
-  // --- Inputs (indices assigned as we push) ---
+  // Inputs — indices are assigned in push order.
   let nextInputIdx = 0;
 
   args.push("-i", beginChimeFile);
@@ -165,7 +160,6 @@ export function buildEncodeArgs(input: EncodeArgsInput): string[] {
     coverIndex = nextInputIdx++;
   }
 
-  // --- Filter complex ---
   // asplit=2 reuses a single input stream twice without a second decode.
   const concatParts: string[] = [];
   let filterChain = "";
@@ -189,7 +183,6 @@ export function buildEncodeArgs(input: EncodeArgsInput): string[] {
   args.push("-filter_complex", filterComplex);
   args.push("-map", "[out]");
 
-  // --- Cover art mapping ---
   if (coverIndex !== undefined) {
     args.push(
       "-map", `${coverIndex}:v`,
@@ -198,20 +191,17 @@ export function buildEncodeArgs(input: EncodeArgsInput): string[] {
     );
   }
 
-  // --- Codec + bitrate ---
   args.push("-c:a", "libmp3lame", "-b:a", bitrate);
 
-  // --- ID3v2 version (required for APIC compatibility) ---
+  // ID3v2.3 is required for cover-art (APIC) compatibility.
   if (coverIndex !== undefined) {
     args.push("-id3v2_version", "3");
   }
 
-  // --- Metadata tags ---
   for (const t of tags) {
     args.push("-metadata", `${t.key}=${t.value}`);
   }
 
-  // --- Output ---
   args.push(outputFile);
 
   return args;

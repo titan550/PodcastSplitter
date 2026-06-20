@@ -5,8 +5,9 @@ import type {
   RuntimeCapabilities,
   SplitMode,
 } from "../types";
-import { planCutsFromChapters } from "../lib/cutPlanner";
-import { maxPartCount } from "../lib/partCount";
+import { SETTINGS_BOUNDS } from "../types";
+import { estimatePartCount } from "../lib/cutPlanner";
+import { clampPartCount, maxPartCount } from "../lib/partCount";
 import { AdvancedSettings } from "./AdvancedSettings";
 
 interface Props {
@@ -51,37 +52,20 @@ export function SettingsForm({
   // future files where a higher count is still valid.
   const listeningDurationSec = durationSec / settings.playbackSpeed;
   const maxParts = maxPartCount(durationSec, settings.playbackSpeed);
-  const parts = Math.min(Math.max(1, settings.targetPartCount), maxParts);
+  const parts = clampPartCount(
+    settings.targetPartCount,
+    durationSec,
+    settings.playbackSpeed,
+  );
 
   const minutesEach = (listeningDurationSec / parts / 60).toFixed(1);
 
-  // Dry-run the planner for chapter mode so the estimate reflects
-  // subdivision (long chapters split by the target ceiling). Memoized
-  // because a 100+ chapter audiobook would otherwise re-sort + re-plan
-  // on every slider-drag render.
-  //
-  // The targetSec passed here MUST match what audioWorker.ts passes to
-  // planCutsFromChapters — both compute `settings.maxChapterPartMin * 60`
-  // literally so the UI estimate stays in sync with actual output.
-  const estimatedParts = useMemo(() => {
-    if (!useChapterMode) return parts; // planCutsByCount guarantees exactly this many
-    return planCutsFromChapters(
-      chapters,
-      durationSec,
-      settings.maxChapterPartMin * 60,
-      settings.playbackSpeed,
-      [],
-      settings.subdivideLongChapters,
-    ).length;
-  }, [
-    useChapterMode,
-    chapters,
-    durationSec,
-    parts,
-    settings.maxChapterPartMin,
-    settings.playbackSpeed,
-    settings.subdivideLongChapters,
-  ]);
+  // Reflects chapter subdivision; memoized so a 100-chapter audiobook
+  // doesn't re-plan on every slider-drag render.
+  const estimatedParts = useMemo(
+    () => estimatePartCount(splitMode, chapters, durationSec, settings),
+    [splitMode, chapters, durationSec, settings],
+  );
 
   return (
     <div className="settings-form">
@@ -163,9 +147,7 @@ export function SettingsForm({
               <span>Target part length: {settings.maxChapterPartMin} min</span>
               <input
                 type="range"
-                min={5}
-                max={60}
-                step={1}
+                {...SETTINGS_BOUNDS.maxChapterPartMin}
                 value={settings.maxChapterPartMin}
                 onChange={(e) =>
                   onChange({ maxChapterPartMin: Number(e.target.value) })
@@ -202,9 +184,7 @@ export function SettingsForm({
         <span>Playback speed: {settings.playbackSpeed.toFixed(2)}x</span>
         <input
           type="range"
-          min={1.0}
-          max={2.0}
-          step={0.05}
+          {...SETTINGS_BOUNDS.playbackSpeed}
           value={settings.playbackSpeed}
           onChange={(e) =>
             onChange({ playbackSpeed: Number(e.target.value) })
@@ -238,9 +218,7 @@ export function SettingsForm({
             </span>
             <input
               type="range"
-              min={1}
-              max={10}
-              step={0.5}
+              {...SETTINGS_BOUNDS.skipLongSilenceMinSec}
               value={settings.skipLongSilenceMinSec}
               onChange={(e) =>
                 onChange({ skipLongSilenceMinSec: Number(e.target.value) })
@@ -253,9 +231,7 @@ export function SettingsForm({
             </span>
             <input
               type="range"
-              min={-60}
-              max={-20}
-              step={1}
+              {...SETTINGS_BOUNDS.silenceRemovalThresholdDb}
               value={settings.silenceRemovalThresholdDb}
               onChange={(e) =>
                 onChange({

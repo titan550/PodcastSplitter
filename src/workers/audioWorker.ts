@@ -11,6 +11,7 @@ import type {
 } from "../types";
 import { detectCapabilities } from "../lib/runtimeCapabilities";
 import { maxPartCount } from "../lib/partCount";
+import { errorMessage } from "../lib/errorMessage";
 import {
   getFFmpeg,
   getFFmpegPool,
@@ -29,11 +30,9 @@ import { buildEndSpeechText, buildSpeechText } from "../lib/tts/speechText";
 import { partFilename } from "../lib/filename";
 import { splitExt } from "../lib/supportedFormats";
 import { createZipWriter, addPartToZip, finalizeZip } from "../lib/exportZip";
+import { runOrderedPool } from "../lib/parallelMap";
 
 let currentPhase: Phase = "loading";
-
-// ffmpeg is loaded lazily inside runPipeline; its startup cost overlaps
-// with the main-thread TTS model download triggered at mount.
 
 // TTS relay: worker sends multiple concurrent requests identified by id.
 // Main thread processes them serially and pushes results back as each
@@ -257,75 +256,37 @@ async function runPipeline(
     }
   }
 
-  // Load additional ffmpeg instances for parallel encoding and write a
-  // fresh copy of the source to each. Memory cost: parallelism × sourceSize
-  // in WASM heaps.
+  // Load additional ffmpeg instances for parallel encoding. Each holds its
+  // own source + assets in a separate WASM heap (memory cost: parallelism ×
+  // sourceSize). ff.writeFile detaches the buffer it's given, so every write
+  // passes a fresh slice() copy. Instance 0 already has the source from the
+  // silence-detection pass above.
   const pool = await getFFmpegPool(parallelism);
   const hasCover = !!sourceMetadata.coverArt;
-  // Retain cover bytes for slice() copies — ff.writeFile detaches the
-  // backing buffer, so each instance needs a fresh copy.
   const coverBytes = sourceMetadata.coverArt?.data ?? null;
   await Promise.all(
     pool.map(async (ff, idx) => {
-      if (idx === 0) {
-        if (hasCover)
-          await ff.writeFile(COVER_FILE, new Uint8Array(coverBytes!.buffer.slice(0)));
-        await ff.writeFile(BEGIN_CHIME_FILE, new Uint8Array(beginChime.slice(0)));
-        await ff.writeFile(END_CHIME_FILE, new Uint8Array(endChime.slice(0)));
-        return;
+      if (idx !== 0) {
+        await ff.writeFile(INPUT_FILE, new Uint8Array(sourceBuffer!.slice(0)));
       }
-      await ff.writeFile(INPUT_FILE, new Uint8Array(sourceBuffer!.slice(0)));
-      if (hasCover)
+      if (hasCover) {
         await ff.writeFile(COVER_FILE, new Uint8Array(coverBytes!.buffer.slice(0)));
+      }
       await ff.writeFile(BEGIN_CHIME_FILE, new Uint8Array(beginChime.slice(0)));
       await ff.writeFile(END_CHIME_FILE, new Uint8Array(endChime.slice(0)));
     }),
   );
-  // Release the retained source buffer now that every instance has a copy.
   sourceBuffer = null;
 
-  // Queue-based parallel encoding. Each ffmpeg instance pulls the next
-  // available part index from a shared counter and encodes it. Completed
-  // parts are buffered and added to the ZIP in strict part-index order
-  // via a promise-chain mutex — without the chain, two workerLoops can
-  // observe the same nextZipIndex and double-add the part.
-  const completedParts = new Map<number, Uint8Array>();
-  let nextZipIndex = 0;
-  let partCursor = 0;
   let partsCompleted = 0;
-  let flushChain: Promise<void> = Promise.resolve();
+  const parallelLabel = parallelism > 1 ? ` (${parallelism} parallel)` : "";
 
-  function flushReadyZipEntries(): Promise<void> {
-    // Deliberately do NOT .catch the chain: if addPartToZip ever throws
-    // the ZIP is already corrupt, so the rejection must propagate through
-    // every subsequent flush caller, fail Promise.all(workerLoops), and
-    // abort runPipeline via the outer try/catch. Silently continuing the
-    // chain would produce a broken ZIP with no error surfaced to the user.
-    flushChain = flushChain.then(async () => {
-      while (completedParts.has(nextZipIndex)) {
-        const data = completedParts.get(nextZipIndex)!;
-        const cut = cuts[nextZipIndex]!;
-        const fname = partFilename(
-          nextZipIndex,
-          totalParts,
-          settings.podcastTitle,
-          cut.chapter,
-        );
-        await addPartToZip(fname, data);
-        completedParts.delete(nextZipIndex);
-        nextZipIndex++;
-      }
-    });
-    return flushChain;
-  }
-
-  const parallelLabel =
-    parallelism > 1 ? ` (${parallelism} parallel)` : "";
-
+  // Encode one part to MP3 and return its bytes. Appending to the ZIP in
+  // strict part order is handled by runOrderedPool's onResult below.
   async function encodeOne(
     ff: (typeof pool)[number],
     partIdx: number,
-  ): Promise<void> {
+  ): Promise<Uint8Array> {
     const cut = cuts[partIdx]!;
     const outputFile = `part_${partIdx}.mp3`;
 
@@ -377,8 +338,7 @@ async function runPipeline(
       tags,
     });
 
-    const partData = await ff.readFile(outputFile);
-    completedParts.set(partIdx, partData as Uint8Array);
+    const partData = (await ff.readFile(outputFile)) as Uint8Array;
 
     await cleanupFiles(ff, ...cleanFiles);
 
@@ -390,15 +350,7 @@ async function runPipeline(
       partsCompleted,
       `${partsCompleted} of ${totalParts} parts complete${parallelLabel}`,
     );
-  }
-
-  async function workerLoop(ff: (typeof pool)[number]): Promise<void> {
-    while (true) {
-      const partIdx = partCursor++;
-      if (partIdx >= cuts.length) return;
-      await encodeOne(ff, partIdx);
-      await flushReadyZipEntries();
-    }
+    return partData;
   }
 
   progress(
@@ -409,7 +361,18 @@ async function runPipeline(
     `0 of ${totalParts} parts complete${parallelLabel}`,
   );
 
-  await Promise.all(pool.map((ff) => workerLoop(ff)));
+  // Encode across the pool and append each finished part to the ZIP in
+  // strict index order (runOrderedPool serializes ordered delivery).
+  await runOrderedPool(pool, cuts.length, encodeOne, async (partIdx, partData) => {
+    const cut = cuts[partIdx]!;
+    const fname = partFilename(
+      partIdx,
+      totalParts,
+      settings.podcastTitle,
+      cut.chapter,
+    );
+    await addPartToZip(fname, partData);
+  });
 
   progress("zipping", 50, totalParts, undefined, "Building ZIP file...");
   const zipBlob = await finalizeZip();
@@ -441,14 +404,16 @@ self.onmessage = async (e: MessageEvent<WorkerInMessage>) => {
         e.data.payload.targetPartCount,
       );
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
       post({
         type: "ERROR",
-        payload: { message, phase: currentPhase, recoverable: false },
+        payload: {
+          message: errorMessage(err),
+          phase: currentPhase,
+          recoverable: false,
+        },
       });
     }
   } else if (e.data.type === "TTS_RESULT") {
-    // Main thread synthesized the WAV and sent it back
     const { id, wavBlob } = e.data.payload;
     const resolve = pendingTTS.get(id);
     if (resolve) {

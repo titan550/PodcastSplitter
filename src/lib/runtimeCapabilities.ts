@@ -48,7 +48,7 @@ export function pickParallelEncoding(
   fileSizeBytes: number,
   caps: RuntimeCapabilities,
 ): number {
-  if (caps.isMobile || caps.isIOS) return 1;
+  if (caps.isMobile) return 1; // isMobile already includes isIOS
 
   // navigator.deviceMemory is in GB, approximate, and not available in
   // all browsers. Defaults to 8 (safe high value) if unavailable.

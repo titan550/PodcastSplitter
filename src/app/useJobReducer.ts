@@ -9,8 +9,8 @@ import type {
   SourceMetadata,
 } from "../types";
 import { DEFAULT_SETTINGS } from "../types";
-import { loadLegacyTargetPartDurationSec, loadSettings } from "../lib/jobStore";
-import { maxPartCount } from "../lib/partCount";
+import { loadStoredSettings } from "../lib/jobStore";
+import { clampPartCount } from "../lib/partCount";
 
 export type JobStatus =
   | "idle"
@@ -84,10 +84,13 @@ function reducer(state: JobState, action: JobAction): JobState {
         const rawCount = Math.round(
           action.durationSec / settings.playbackSpeed / legacyTargetPartDurationSec,
         );
-        const max = maxPartCount(action.durationSec, settings.playbackSpeed);
         settings = {
           ...settings,
-          targetPartCount: Math.min(Math.max(1, rawCount), max),
+          targetPartCount: clampPartCount(
+            rawCount,
+            action.durationSec,
+            settings.playbackSpeed,
+          ),
         };
         legacyTargetPartDurationSec = null;
       }
@@ -179,12 +182,11 @@ function reducer(state: JobState, action: JobAction): JobState {
 // the very first render. This avoids the save-on-change effect clobbering
 // saved values with defaults in React StrictMode double-mount.
 function init(): JobState {
-  const saved = loadSettings();
-  const legacy = loadLegacyTargetPartDurationSec();
+  const { settings, legacyTargetPartDurationSec } = loadStoredSettings();
   return {
     ...initialState,
-    settings: { ...DEFAULT_SETTINGS, ...saved },
-    legacyTargetPartDurationSec: legacy,
+    settings: { ...DEFAULT_SETTINGS, ...settings },
+    legacyTargetPartDurationSec,
   };
 }
 

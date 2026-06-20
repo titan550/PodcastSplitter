@@ -33,7 +33,8 @@ export async function detectSilences(
   const logLines: string[] = [];
 
   const logHandler = ({ message }: { message: string }) => {
-    logLines.push(message);
+    // ffmpeg emits a lot of non-silence log noise; keep only what we parse.
+    if (message.includes("silence_")) logLines.push(message);
   };
 
   ffmpeg.on("log", logHandler);

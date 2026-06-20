@@ -10,24 +10,12 @@ export function deriveTitle(file: File): string {
 }
 
 /**
- * Strict lowercase ASCII slug used for the variable portions of
- * partFilename. The output is safe across cheap MP3 players, POSIX
- * shells, rsync/cloud sync, ZIP tools, and every major filesystem.
- *
- * Rules (in order):
- *   1. NFKD-normalize and strip combining marks so accented letters
- *      collapse to their ASCII base ("café" → "cafe").
- *   2. Lowercase.
- *   3. Drop apostrophes / single-quotes *first* so "Don't" becomes
- *      "dont", not "don_t".
- *   4. Drop any remaining non-ASCII (emoji, symbols, CJK, …).
- *   5. Replace any run of whitespace or punctuation with a single "_".
- *   6. Collapse repeated "_".
- *   7. Trim leading / trailing "_".
- *
- * Returns the empty string for inputs that contain no sluggable chars.
- * Callers are responsible for substituting a context-aware fallback
- * (partFilename does this for the podcast and chapter slugs).
+ * Strict lowercase-ASCII-with-underscores slug for the variable parts of a
+ * filename — safe across cheap MP3 players, shells, cloud sync, ZIP tools,
+ * and every major filesystem. Apostrophes are dropped first so "Don't" →
+ * "dont" (not "don_t"); accents fold to ASCII via NFKD; remaining non-ASCII
+ * is removed. Returns "" when nothing is sluggable — callers substitute
+ * their own fallback.
  */
 export function slugFilenameSegment(input: string): string {
   return input
@@ -92,27 +80,16 @@ function fitSlug(slug: string, budget: number): string {
 }
 
 /**
- * Deterministic filename for a single part. Slug-style lowercase ASCII
- * with underscores only — robust across cheap MP3 players, shells,
- * rsync/cloud sync, ZIP tools, and every major filesystem.
+ * Deterministic, sort-stable filename for one part (lowercase ASCII slug):
  *
- *  Time mode:
- *    {hash}_{globalIndex}_{podcast_slug}__part_{N}_of_{TOTAL}.mp3
- *  Chapter, single part:
- *    {hash}_{globalIndex}_{podcast_slug}__part_{N}_of_{TOTAL}__ch_{C}_of_{TOTAL_CH}_{chapter_slug}.mp3
- *  Chapter, sub-part:
- *    {hash}_{globalIndex}_{podcast_slug}__part_{N}_of_{TOTAL}__ch_{C}_of_{TOTAL_CH}_{chapter_slug}__p_{index}_of_{count}.mp3
+ *  Time mode:         {hash}_{globalIndex}_{podcast}__part_{N}_of_{TOTAL}.mp3
+ *  Chapter, 1 part:   …__part_{N}_of_{TOTAL}__ch_{C}_of_{TOTAL_CH}_{chapter}.mp3
+ *  Chapter, sub-part: …__ch_{C}_of_{TOTAL_CH}_{chapter}__p_{index}_of_{count}.mp3
  *
- * The leading `globalIndex` guarantees that a basic lexicographic sort
- * (in a ZIP, a file manager, or on a cheap MP3 player) reproduces
- * playback order across the whole podcast. The trailing
- * `__part_{N}_of_{TOTAL}` is the human-readable counter that matches the
- * spoken announcement ("Part N of TOTAL").
- *
- * Structural fields are preserved under the 150-char cap; the podcast
- * slug is truncated first and the chapter slug second if overflow
- * remains. In the unreachable worst case, both slugs collapse to empty
- * and the structural fields still fit.
+ * The leading `globalIndex` makes a plain lexicographic sort reproduce
+ * playback order; the trailing `__part_{N}_of_{TOTAL}` matches the spoken
+ * announcement. Under the 150-char cap the podcast slug is truncated first,
+ * the chapter slug second; structural fields are always preserved.
  */
 export function partFilename(
   partIndex: number,
@@ -146,9 +123,7 @@ export function partFilename(
   const subPartTail = chapter.part
     ? `__p_${chapter.part.index}_of_${chapter.part.count}`
     : "";
-  // Structural tail: "__part_{NN}_of_{TT}__ch_{CC}_of_{DD}_" + chapterSlug + subPartTail + ".mp3"
-  // We split this into a fixed prefix and a sluggable chapter segment
-  // that can be truncated independently.
+  // Fixed structural tail; the chapter slug between is truncated separately.
   const chapterFixed = `__ch_${chapterNumStr}_of_${totalChaptersPadded}_`;
   const structuralTailFixed = `${partFixed}${chapterFixed}${subPartTail}${ext}`;
   const head = `${hash}_${globalIndex}_`;

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { ProcessingSettings, RuntimeCapabilities } from "../types";
+import { SETTINGS_BOUNDS } from "../types";
 import { clearAllCaches, FIRST_RUN_DOWNLOADS } from "../lib/cache/modelCache";
 
 interface Props {
@@ -92,9 +93,7 @@ export function AdvancedSettings({ settings, capabilities, onChange }: Props) {
         </span>
         <input
           type="range"
-          min={-50}
-          max={-10}
-          step={1}
+          {...SETTINGS_BOUNDS.silenceThresholdDb}
           value={settings.silenceThresholdDb}
           onChange={(e) =>
             onChange({ silenceThresholdDb: Number(e.target.value) })
@@ -108,9 +107,7 @@ export function AdvancedSettings({ settings, capabilities, onChange }: Props) {
         </span>
         <input
           type="range"
-          min={0.1}
-          max={2.0}
-          step={0.1}
+          {...SETTINGS_BOUNDS.silenceMinDurationSec}
           value={settings.silenceMinDurationSec}
           onChange={(e) =>
             onChange({ silenceMinDurationSec: Number(e.target.value) })

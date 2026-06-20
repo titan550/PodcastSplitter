@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   anyChapterWillSubdivide,
+  estimatePartCount,
   findBestCut,
   planCuts,
   planCutsByCount,
@@ -477,5 +478,53 @@ describe("planCutsByCount", () => {
     expect(cuts).toHaveLength(5);
     expect(cuts[0]!.endSec).toBeLessThan(cuts[1]!.endSec);
     expect(cuts[0]!.endSec).toBeLessThanOrEqual(52); // ideal (40) + grace cap (12)
+  });
+});
+
+describe("estimatePartCount", () => {
+  const base = {
+    targetPartCount: 6,
+    playbackSpeed: 1,
+    maxChapterPartMin: 5,
+    subdivideLongChapters: false,
+  };
+
+  it("returns the clamped part count in time mode", () => {
+    // 3600s / 300s floor = 12 max; 6 is within range.
+    expect(estimatePartCount("time", [], 3600, base)).toBe(6);
+  });
+
+  it("clamps an over-large time-mode count to the file maximum", () => {
+    // 1800s / 300s floor = 6 max.
+    expect(
+      estimatePartCount("time", [], 1800, { ...base, targetPartCount: 50 }),
+    ).toBe(6);
+  });
+
+  it("falls back to time mode with fewer than 2 chapters", () => {
+    const chapters: Chapter[] = [{ title: "A", start: 0 }];
+    expect(
+      estimatePartCount("chapters", chapters, 1800, { ...base, targetPartCount: 4 }),
+    ).toBe(4);
+  });
+
+  it("counts one part per chapter when subdivision is off", () => {
+    const chapters: Chapter[] = [
+      { title: "A", start: 0 },
+      { title: "B", start: 600 },
+      { title: "C", start: 1200 },
+    ];
+    expect(
+      estimatePartCount("chapters", chapters, 1800, { ...base, targetPartCount: 99 }),
+    ).toBe(3);
+  });
+
+  it("subdivides a long chapter when enabled", () => {
+    const chapters: Chapter[] = [{ title: "A", start: 0 }];
+    const n = estimatePartCount("chapters", chapters, 1800, {
+      ...base,
+      subdivideLongChapters: true,
+    });
+    expect(n).toBeGreaterThan(1);
   });
 });

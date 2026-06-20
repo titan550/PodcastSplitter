@@ -59,6 +59,19 @@ export const DEFAULT_SETTINGS: ProcessingSettings = {
   maxChapterPartMin: 10,
 };
 
+// Min/max (validation domain) + step (slider granularity) for the numeric
+// settings backed by range sliders. Single source of truth: jobStore reads
+// min/max to validate persisted values; the settings form spreads each entry
+// straight onto its <input type="range">. Keeps the validator and UI in sync.
+export const SETTINGS_BOUNDS = {
+  playbackSpeed: { min: 1.0, max: 2.0, step: 0.05 },
+  silenceThresholdDb: { min: -50, max: -10, step: 1 },
+  silenceMinDurationSec: { min: 0.1, max: 2.0, step: 0.1 },
+  silenceRemovalThresholdDb: { min: -60, max: -20, step: 1 },
+  skipLongSilenceMinSec: { min: 1, max: 10, step: 0.5 },
+  maxChapterPartMin: { min: 5, max: 60, step: 1 },
+} as const;
+
 // --- Metadata ---
 
 export interface Chapter {

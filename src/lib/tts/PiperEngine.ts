@@ -32,7 +32,7 @@ export class PiperEngine implements TTSEngine {
 
     const { TtsSession } = await import("@mintplex-labs/piper-tts-web");
 
-    // Create session — TtsSession handles model download and caching internally
+    // TtsSession handles model download + caching internally.
     this.session = new TtsSession({
       voiceId: this.voiceId,
       progress: (progress: { loaded: number; total: number }) => {
@@ -47,7 +47,6 @@ export class PiperEngine implements TTSEngine {
       },
     });
 
-    // Wait for the session's init to finish before trying predict
     await this.session.waitReady;
   }
 
